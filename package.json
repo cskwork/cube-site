@@ -1,0 +1,42 @@
+{
+  "name": "cube-site",
+  "private": false,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Cube Site — an HTML-in-Canvas / CSS3D demo that renders any website inside an interactive 3D cube. Customize colors / stickers / imprint and share via URL hash. Pure static site, deploys anywhere.",
+  "keywords": [
+    "html-in-canvas",
+    "origin-trial",
+    "three.js",
+    "css3d",
+    "iframe",
+    "3d",
+    "vite",
+    "static-site"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "npm run typecheck && npm run test && npm run build",
+    "deploy:gh-pages": "deploy/github-pages.sh",
+    "deploy:netlify": "deploy/netlify.sh",
+    "deploy:vercel": "deploy/vercel.sh",
+    "deploy:cloudflare": "deploy/cloudflare-pages.sh",
+    "deploy:s3": "deploy/s3.sh"
+  },
+  "dependencies": {
+    "three": "^0.171.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.171.0",
+    "happy-dom": "^15.11.7",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "vitest": "^2.1.8"
+  }
+}
