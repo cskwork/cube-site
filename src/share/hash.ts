@@ -158,17 +158,14 @@ export function selftest(): boolean {
 }
 
 function toBase64Url(text: string): string {
-  const b64 = typeof btoa === "function"
-    ? btoa(unescape(encodeURIComponent(text)))
-    : Buffer.from(text, "utf-8").toString("base64");
+  // Browser-only — btoa is always available. unescape+encodeURIComponent
+  // is the canonical "btoa with UTF-8 safe" trick.
+  const b64 = btoa(unescape(encodeURIComponent(text)));
   return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 function fromBase64Url(b64u: string): string {
   const padded = b64u.replace(/-/g, "+").replace(/_/g, "/")
     + "=".repeat((4 - (b64u.length % 4)) % 4);
-  if (typeof atob === "function") {
-    return decodeURIComponent(escape(atob(padded)));
-  }
-  return Buffer.from(padded, "base64").toString("utf-8");
+  return decodeURIComponent(escape(atob(padded)));
 }
