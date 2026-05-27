@@ -13,3 +13,4 @@ coverage
 # Local planning artifacts — not for public repo.
 .omc/
 brief.md
+.vercel
