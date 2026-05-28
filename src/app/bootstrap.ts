@@ -12,10 +12,13 @@ import {
   Store, type FaceId, type AppState
 } from "./state";
 import { readFromLocationHash, writeToLocationHash } from "../share/hash";
-import { createFaceTextures, repaintFace } from "../dice/faceTextures";
+import { createFaceTextures, repaintFace, repaintLiveFace } from "../dice/faceTextures";
 import { createScene } from "../dice/scene";
 import { el, on, debounce } from "../util/dom";
 import { createTools } from "../ui/tools";
+import { createBanner } from "../ui/banner";
+import { detectMode } from "../htmlCanvas/adapter";
+import { createLiveFaceController } from "../htmlCanvas/liveFace";
 
 export function bootstrap(root: HTMLElement): void {
   const initial = readFromLocationHash() ?? loadFromStorage() ?? defaultState();
@@ -29,7 +32,23 @@ export function bootstrap(root: HTMLElement): void {
 
   const faces = createFaceTextures();
   const scene = createScene(stage, faces, initial.liveFace, initial.targetUrl);
-  scene.setIframeVisible(initial.liveMode === "iframe");
+
+  // Experimental HTML-in-Canvas live face (drawElementImage → CanvasTexture).
+  // Opt-in + capability-gated; controller is a no-op on unsupported browsers.
+  const liveCanvas = createLiveFaceController(store, scene);
+
+  // Show the real iframe for "iframe" mode, and also as the graceful fallback
+  // when "html-canvas" is requested but the browser can't run it.
+  const wantIframe = (s: AppState): boolean =>
+    s.liveMode === "iframe" ||
+    (s.liveMode === "html-canvas" && detectMode() !== "native");
+
+  scene.setIframeVisible(wantIframe(initial));
+  liveCanvas.reconcile();
+
+  // Status banner — honestly reports whether native HTML-in-Canvas is active.
+  const banner = createBanner(detectMode());
+  stage.appendChild(banner.root);
 
   const tools = createTools(store);
   shell.appendChild(tools.root);
@@ -41,10 +60,14 @@ export function bootstrap(root: HTMLElement): void {
   let lastState = store.get();
   function repaintAll(force = false): void {
     const s = store.get();
+    const themeDelta = themeChanged(lastState, s);
+    const urlDelta = s.targetUrl !== lastState.targetUrl; // live card shows the URL
     for (let i = 0 as FaceId; i < 6; i = (i + 1) as FaceId) {
-      if (force || lastState.faces[i] !== s.faces[i] || themeChanged(lastState, s)) {
-        repaintFace(faces[i], s, s.faces[i], false);
-      }
+      const isLive = i === s.liveFace;
+      const changed = force || lastState.faces[i] !== s.faces[i] || themeDelta || (isLive && urlDelta);
+      if (!changed) continue;
+      if (isLive) repaintLiveFace(faces[i], s, s.faces[i]);
+      else repaintFace(faces[i], s, s.faces[i], false);
     }
     lastState = s;
   }
@@ -54,9 +77,10 @@ export function bootstrap(root: HTMLElement): void {
   store.subscribe(() => {
     const s = store.get();
     if (s.targetUrl !== lastState.targetUrl) scene.setTargetUrl(s.targetUrl);
-    if (s.liveMode !== lastState.liveMode) scene.setIframeVisible(s.liveMode === "iframe");
+    if (s.liveMode !== lastState.liveMode) scene.setIframeVisible(wantIframe(s));
     if (s.liveFace !== lastState.liveFace) scene.setLiveFace(s.liveFace);
     repaintAll();
+    liveCanvas.reconcile();
     persist();
   });
 

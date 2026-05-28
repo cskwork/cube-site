@@ -1,20 +1,22 @@
 /**
  * Per-face CanvasTexture renderer.
  *
- * Each cube face owns a 1024x1024 offscreen canvas. We repaint a face
- * only when its state changes (decoration mutation, theme switch,
- * sticker move). For the live AIDT face we ALSO repaint at a throttled
- * cadence (see liveFace.ts) using the htmlCanvas adapter.
+ * Each cube face owns a 1024x1024 offscreen canvas. We repaint a face only
+ * when its state changes (decoration mutation, theme switch, sticker move).
  *
- * Repainting is split into pure background, decoration overlay, sticker
- * layer, imprint layer — so the live AIDT face can paint its HTML
- * content INSIDE the same background+decoration frame.
+ * Repainting is split into pure background + decoration overlay (stickers,
+ * imprint). The live face has its own painter, repaintLiveFace(): in "card"
+ * mode it paints a styled site-preview card; otherwise it shows the user's
+ * own decoration (visible while the iframe/html-canvas overlay is hidden
+ * during rotation).
  */
 
 import * as THREE from "three";
 import type { FaceState, AppState, FaceId } from "../app/state";
 
 const FACE_SIZE = 1024;
+
+const FONT_STACK = '"Pretendard Variable", "Apple SD Gothic Neo", system-ui, sans-serif';
 
 /**
  * The "entry zone" within the live face — only this rectangle renders the
@@ -219,6 +221,122 @@ export function repaintFace(
   if (!isLiveFace) {
     paintFaceOverlay(ft, face);
   }
+}
+
+/**
+ * Repaint the live (entry) face. In "card" mode this paints a styled
+ * site-preview card so the face is never bare; in "iframe"/"html-canvas"
+ * mode the overlay covers it when active, so we paint the user's own
+ * decoration to show through during rotation.
+ */
+export function repaintLiveFace(
+  ft: FaceTexture,
+  appState: AppState,
+  face: FaceState
+): void {
+  paintFaceBackground(ft, { appState, face, faceId: ft.faceId, isLiveFace: true });
+  if (appState.liveMode === "card") {
+    paintLiveCard(ft, appState);
+  } else {
+    paintFaceOverlay(ft, face);
+  }
+}
+
+/**
+ * Paint a browser-window-style preview card representing the live target
+ * site, on top of the already-painted themed panel. Used by "card" mode so
+ * the live face shows something meaningful when the real iframe is hidden
+ * (e.g. the site sends X-Frame-Options: DENY).
+ */
+export function paintLiveCard(ft: FaceTexture, appState: AppState): void {
+  const { ctx } = ft;
+  const W = FACE_SIZE;
+  const accent = appState.accent;
+
+  let host = appState.targetUrl;
+  try {
+    host = new URL(appState.targetUrl).hostname.replace(/^www\./, "") || appState.targetUrl;
+  } catch {
+    /* keep raw string */
+  }
+
+  // ---- inner card ----
+  const cx = W * 0.12, cy = W * 0.17, cw = W * 0.76, ch = W * 0.66;
+  ctx.save();
+  ctx.shadowColor = "rgba(0,0,0,0.45)";
+  ctx.shadowBlur = W * 0.045;
+  ctx.shadowOffsetY = W * 0.012;
+  ctx.fillStyle = "rgba(12,15,26,0.84)";
+  roundRect(ctx, cx, cy, cw, ch, W * 0.045);
+  ctx.fill();
+  ctx.shadowColor = "transparent";
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+
+  // ---- title bar: traffic lights + address pill ----
+  const barH = ch * 0.15;
+  const dotR = barH * 0.13;
+  const dotY = cy + barH * 0.5;
+  ["#ff5f57", "#febc2e", "#28c840"].forEach((c, i) => {
+    ctx.fillStyle = c;
+    circle(ctx, cx + cw * 0.06 + i * dotR * 3, dotY, dotR);
+  });
+  const pillX = cx + cw * 0.28, pillW = cw * 0.64;
+  const pillH = barH * 0.5, pillY = dotY - pillH / 2;
+  ctx.fillStyle = "rgba(255,255,255,0.10)";
+  roundRect(ctx, pillX, pillY, pillW, pillH, pillH / 2);
+  ctx.fill();
+  ctx.fillStyle = "rgba(231,233,242,0.92)";
+  ctx.font = `500 ${Math.round(barH * 0.34)}px ${FONT_STACK}`;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(truncate(host, 30), pillX + pillW * 0.06, dotY);
+
+  // ---- divider ----
+  ctx.strokeStyle = "rgba(255,255,255,0.08)";
+  ctx.lineWidth = Math.max(1, W * 0.0015);
+  ctx.beginPath();
+  ctx.moveTo(cx, cy + barH);
+  ctx.lineTo(cx + cw, cy + barH);
+  ctx.stroke();
+
+  // ---- body: headline + host line ----
+  const bodyX = cx + cw * 0.08;
+  ctx.fillStyle = "#f7f8ff";
+  ctx.font = `800 ${Math.round(ch * 0.13)}px ${FONT_STACK}`;
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText("라이브 사이트", bodyX, cy + barH + ch * 0.28);
+  ctx.fillStyle = "rgba(200,205,242,0.85)";
+  ctx.font = `500 ${Math.round(ch * 0.075)}px ${FONT_STACK}`;
+  ctx.fillText(truncate(host, 34), bodyX, cy + barH + ch * 0.45);
+
+  // ---- CTA pill ----
+  const ctaW = cw * 0.46, ctaH = ch * 0.16;
+  const ctaX = bodyX, ctaY = cy + ch * 0.72;
+  const g = ctx.createLinearGradient(ctaX, ctaY, ctaX + ctaW, ctaY + ctaH);
+  g.addColorStop(0, accent);
+  g.addColorStop(1, lighten(accent, 0.22));
+  ctx.fillStyle = g;
+  roundRect(ctx, ctaX, ctaY, ctaW, ctaH, ctaH / 2);
+  ctx.fill();
+  ctx.fillStyle = "#0b0f1a";
+  ctx.font = `800 ${Math.round(ctaH * 0.42)}px ${FONT_STACK}`;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText("입장 →", ctaX + ctaW * 0.16, ctaY + ctaH / 2);
+
+  ctx.restore();
+  ft.texture.needsUpdate = true;
+}
+
+function circle(ctx: CanvasRenderingContext2D, x: number, y: number, r: number): void {
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
 // ---------- color helpers ----------

@@ -2,7 +2,7 @@
 
 > Render **any website** inside an interactive 3D cube. Decorate the cube with trendy "꾸미기" presets, drop stickers, imprint text, and share the whole thing — site + decoration — through a single URL hash.
 
-A working playground for Chrome's experimental **HTML-in-Canvas Origin Trial** (`ctx.drawElement()`) combined with Three.js + CSS3DRenderer for a fully interactive iframe stitched onto a rotating cube face.
+A Three.js 3D site-portal: one cube face shows a live, interactive `<iframe>` of any URL, tracked to the face each frame. It **also** ships a real, spec-correct implementation of Chrome's experimental **HTML-in-Canvas** API (`ctx.drawElementImage()`) as an opt-in, capability-gated live-face mode that paints live DOM onto the cube via a WebGL texture.
 
 ```
 ┌──────────────────────────┐  ┌──────────────────┐
@@ -20,7 +20,8 @@ A working playground for Chrome's experimental **HTML-in-Canvas Origin Trial** (
 
 ## ✨ What it does
 
-- **Cube IS the site.** One face of the cube is a real `<iframe>` rendered in 3D via Three.js `CSS3DRenderer`. You click buttons, scroll, type, submit forms — through the cube.
+- **Cube IS the site.** One face of the cube is a real `<iframe>`, screen-tracked to the live face each frame over the Three.js WebGL canvas. You click buttons, scroll, type, submit forms — through the cube. (A 2D overlay was chosen over `CSS3DRenderer` because Chrome's CSS-3D iframe hit-testing is unreliable.)
+- **Three live-face modes.** `실제 사이트` (interactive iframe, default), `스타일 카드` (a Canvas2D site-preview card for sites that block framing), and `HTML-in-Canvas` (experimental — see below).
 - **Decorate the other 5 faces.** 5 trend presets (Y2K Cyber, Frutiger Aero, Soft Pastel, Holographic, Bento), color/glow/hue/radius sliders, 24 emoji stickers, per-face text imprint.
 - **Swap any URL at runtime.** A `라이브 사이트 URL` field in the 공유 tab — paste any URL, hit 적용, and the cube becomes that site.
 - **Share via URL hash.** The decoration state AND the active URL serialize to a compact base64url hash. Copy the link, paste in another tab/device, identical cube reappears.
@@ -46,14 +47,21 @@ npx serve dist           # smoke-test locally on http://localhost:3000
 
 ## 🧩 How HTML-in-Canvas fits
 
-The original goal of this project was Chrome's [HTML element in Canvas2D Origin Trial](https://developer.chrome.com/blog/html-in-canvas-origin-trial) — `ctx.drawElement(htmlElement, x, y)`. You'll find a clean adapter at [`src/htmlCanvas/adapter.ts`](src/htmlCanvas/adapter.ts) that feature-detects `drawElement` and falls back to a hand-rolled Canvas2D card painter when the OT isn't enabled.
+Chrome's [HTML-in-Canvas](https://developer.chrome.com/blog/html-in-canvas-origin-trial) (WICG `drawElementImage`) lets you paint live DOM into a `<canvas>`. The `HTML-in-Canvas` live-face mode is a real implementation of it:
 
-In practice, the **interactive demo path** uses a CSS3D-rendered `<iframe>` because users want to click buttons inside the site, which a static canvas snapshot can't deliver. Both approaches share the cube — the OT path stays available for projects that need a textured snapshot of HTML inside a WebGL canvas.
+1. A hidden `<canvas layoutsubtree>` hosts a live HTML panel as its direct child ([`src/htmlCanvas/livePanel.ts`](src/htmlCanvas/livePanel.ts)).
+2. On each `onpaint`, `ctx.drawElementImage(panel, 0, 0)` snapshots that DOM into the canvas ([`src/htmlCanvas/adapter.ts`](src/htmlCanvas/adapter.ts)).
+3. That canvas backs a `THREE.CanvasTexture` mapped onto the rotating cube's live face ([`src/htmlCanvas/liveFace.ts`](src/htmlCanvas/liveFace.ts)) — so it's genuinely *HTML → canvas → WebGL*.
 
-## 🌐 Live demos
+The adapter feature-detects `ctx.drawElementImage` (`detectMode()`); the [status banner](src/ui/banner.ts) reports whether native mode is active, and the mode pill is disabled with an explanation when it isn't.
 
-- GitHub Pages (auto-deployed): `https://<your-username>.github.io/<repo-name>/`
-- Vercel: `https://<your-vercel-slug>.vercel.app/`
+**This is an experimental, single-browser feature** — it runs only on Chromium 147+ with the `chrome://flags/#canvas-draw-element` flag, or Chrome 148–151 with an Origin-Trial token; never Firefox/Safari. So `실제 사이트` (iframe) is the honest cross-browser default, and the `HTML-in-Canvas` mode gracefully falls back to the iframe when unsupported.
+
+## 🌐 Live demo
+
+- **GitHub Pages (production):** https://cskwork.github.io/cube-site/
+
+To experience the experimental HTML-in-Canvas mode, open it in Chrome/Brave 147+ with `chrome://flags/#canvas-draw-element` enabled, then pick `HTML-in-Canvas` in the 공유 tab's 미리보기 모드.
 
 ## 📦 Deploy
 
@@ -127,7 +135,7 @@ npm run dev         # Vite dev server
 npm run build       # production build → dist/
 npm run preview     # preview the production build
 npm run typecheck   # tsc --noEmit
-npm run test        # vitest (adapter + hash encoding)
+npm run test        # vitest (state validation, hash codec, html-canvas adapter, tools panel)
 npm run verify      # typecheck + test + build (CI gate)
 ```
 
@@ -137,23 +145,24 @@ npm run verify      # typecheck + test + build (CI gate)
 src/
 ├── main.ts
 ├── app/
-│   ├── bootstrap.ts        wires state, scene, tools
-│   └── state.ts            AppState + Store + localStorage
+│   ├── bootstrap.ts        wires state, scene, tools, live-canvas, banner
+│   ├── state.ts            AppState + Store + localStorage + validate()
+│   └── state.test.ts
 ├── htmlCanvas/
-│   ├── adapter.ts          Chrome OT drawElement wrapper + fallback
-│   └── adapter.test.ts
+│   ├── adapter.ts          drawElementImage detect + <canvas layoutsubtree> source
+│   ├── adapter.test.ts
+│   ├── livePanel.ts        the live DOM painted onto the face
+│   └── liveFace.ts         drawElementImage → CanvasTexture → cube controller
 ├── dice/
-│   ├── scene.ts            Three.js cube + CSS3DRenderer iframe overlay
-│   └── faceTextures.ts     per-face CanvasTexture painter
-├── target/
-│   ├── siteConfig.ts       env → runtime defaults
-│   └── ...                 (legacy stubs, kept for import compat)
+│   ├── scene.ts            Three.js cube + 2D iframe overlay + live-face texture swap
+│   └── faceTextures.ts     per-face CanvasTexture painter (+ live preview card)
 ├── share/
-│   ├── hash.ts             state ↔ base64url URL-hash codec
+│   ├── hash.ts             state ↔ base64url URL-hash codec (validated)
 │   └── hash.test.ts
 ├── ui/
-│   ├── tools.ts            tabs + URL input + footer (reset/share)
-│   ├── banner.ts
+│   ├── tools.ts            tabs + URL input + mode pills + footer
+│   ├── tools.test.ts
+│   ├── banner.ts           HTML-in-Canvas status banner
 │   └── toast.ts
 ├── util/dom.ts
 └── styles/
@@ -167,7 +176,8 @@ src/
 
 - **Cross-origin popups.** A target site's `target="_blank"` links or `window.open` calls cannot be redirected back into the cube iframe — by browser security spec, cross-origin documents can't be re-targeted from outside. For same-origin targets, the app injects `<base target="_self">` on load so internal nav stays in-cube.
 - **X-Frame-Options.** Sites that serve `X-Frame-Options: DENY` or strict `Content-Security-Policy: frame-ancestors` will load blank. Toggle the 공유 tab's "스타일 카드" mode to hide the empty iframe and show the WebGL face decoration instead.
-- **Origin Trial token.** Each deploy origin needs its own token from [chromestatus.com](https://developer.chrome.com/origintrials/). The CSS3D iframe path doesn't require the OT — it's only relevant if you switch to the canvas-snapshot path.
+- **HTML-in-Canvas is experimental & Chromium-only.** The `HTML-in-Canvas` mode needs Chromium 147+ with `chrome://flags/#canvas-draw-element`, or an Origin-Trial token (trial runs ~M148–M151, 2026; it expires). Firefox/Safari are unsupported. The iframe/card modes need none of this and work everywhere.
+- **Origin Trial on a real deploy.** GitHub Pages cannot send an `Origin-Trial` response header, so the only way to enable the OT in production is the `<meta http-equiv="origin-trial">` slot — set the `OT_TOKEN` repo secret (CI injects it via `%OT_TOKEN%`) with a token registered for `https://cskwork.github.io`. Note: `*.vercel.app` is on the Public Suffix List, so no wildcard Vercel token can be issued — use a custom domain (Vercel *can* set the `Origin-Trial` response header) or register per preview URL.
 
 ## ♿ Accessibility
 

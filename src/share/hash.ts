@@ -1,5 +1,5 @@
 import type { AppState, FaceState, FaceSticker, FaceImprint } from "../app/state";
-import { defaultState } from "../app/state";
+import { defaultState, validate } from "../app/state";
 
 /**
  * Compact URL-hash share format.
@@ -40,10 +40,12 @@ export function hashToState(hash: string): AppState | null {
   try {
     const json = fromBase64Url(hash.slice(HASH_PREFIX.length));
     const parsed = JSON.parse(json) as ShortState | AppState;
-    if (isShort(parsed)) return fromShort(parsed);
-    // Legacy long format — accept too, for forwards/backwards compatibility.
+    if (isShort(parsed)) return validate(fromShort(parsed));
+    // Legacy long format — accept too, but route through validate() so an
+    // old/corrupt bookmark can't deliver an out-of-range liveFace or a face
+    // missing stickers[] straight into the render loop.
     if (parsed?.version === 1 && Array.isArray(parsed.faces) && parsed.faces.length === 6) {
-      return parsed;
+      return validate(parsed as AppState);
     }
     return null;
   } catch {
@@ -106,7 +108,7 @@ function fromShort(s: ShortState): AppState {
     liveFace: s.lf as AppState["liveFace"],
     selectedFace: s.sf as AppState["selectedFace"],
     targetUrl: s.tu ?? defaultState().targetUrl,
-    liveMode: (s.lm === "iframe" || s.lm === "card") ? s.lm : "iframe",
+    liveMode: (s.lm === "iframe" || s.lm === "card" || s.lm === "html-canvas") ? s.lm : "iframe",
     faces: s.f.map<FaceState>((face) => ({
       baseColor: face.c,
       stickers: (face.s ?? []).map<FaceSticker>((st) => ({

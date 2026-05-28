@@ -1,123 +1,77 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   detectMode,
-  drawHTMLOntoCanvas,
+  createHtmlCanvasSource,
   __resetModeCacheForTests,
   readOriginTrialToken
 } from "./adapter";
 
 /**
- * happy-dom does not implement CanvasRenderingContext2D, so we mint
- * a hand-rolled fake that records the calls the adapter makes. The
- * adapter only cares about: drawElement (native path) OR the basic
- * 2d drawing methods (fallback path).
+ * happy-dom does not implement Canvas2D or the experimental
+ * drawElementImage API, so we patch getContext to return a stub that
+ * records the calls the adapter makes.
  */
-function makeFakeCtx(withDrawElement: boolean): {
-  ctx: CanvasRenderingContext2D;
-  readonly drawElementCalls: number;
-  readonly fillCalls: number;
-  readonly fillTextCalls: number;
-  throwOnDraw: boolean;
-} {
-  const state = { drawElementCalls: 0, fillCalls: 0, fillTextCalls: 0, throwOnDraw: false };
+function patchContext(withApi: boolean): { drawCalls: number } {
+  const state = { drawCalls: 0 };
   const stub: Record<string, unknown> = {
-    save: () => {},
-    restore: () => {},
-    beginPath: () => {},
-    closePath: () => {},
-    moveTo: () => {},
-    lineTo: () => {},
-    arcTo: () => {},
-    fillRect: () => { state.fillCalls++; },
-    fillText: () => { state.fillTextCalls++; },
-    stroke: () => {},
-    fill: () => { state.fillCalls++; },
-    clip: () => {},
-    createLinearGradient: () => ({ addColorStop: () => {} }),
-    createRadialGradient: () => ({ addColorStop: () => {} }),
-    translate: () => {},
-    rotate: () => {},
-    set fillStyle(_v: unknown) {},
-    set strokeStyle(_v: unknown) {},
-    set lineWidth(_v: unknown) {},
-    set font(_v: unknown) {},
-    set textAlign(_v: unknown) {},
-    set textBaseline(_v: unknown) {},
-    set shadowColor(_v: unknown) {},
-    set shadowBlur(_v: unknown) {},
-    set globalAlpha(_v: unknown) {},
-    set globalCompositeOperation(_v: unknown) {}
+    setTransform: () => {},
+    clearRect: () => {},
+    reset: () => {}
   };
-  if (withDrawElement) {
-    stub.drawElement = () => {
-      state.drawElementCalls++;
-      if (state.throwOnDraw) throw new Error("boom");
+  if (withApi) {
+    stub.drawElementImage = () => {
+      state.drawCalls++;
+      return {} as DOMMatrix;
     };
   }
-  // Patch getContext so detectMode() can probe a canvas.
   HTMLCanvasElement.prototype.getContext = function (kind: string) {
-    if (kind !== "2d") return null;
-    return stub as unknown as CanvasRenderingContext2D;
+    return kind === "2d" ? (stub as unknown as CanvasRenderingContext2D) : null;
   } as HTMLCanvasElement["getContext"];
   return {
-    ctx: stub as unknown as CanvasRenderingContext2D,
-    get drawElementCalls() { return state.drawElementCalls; },
-    get fillCalls() { return state.fillCalls; },
-    get fillTextCalls() { return state.fillTextCalls; },
-    set throwOnDraw(v: boolean) { state.throwOnDraw = v; },
-    get throwOnDraw() { return state.throwOnDraw; }
-  };
+    get drawCalls() { return state.drawCalls; }
+  } as { drawCalls: number };
 }
 
 describe("htmlCanvasAdapter", () => {
   beforeEach(() => __resetModeCacheForTests(null));
 
-  it("detects fallback when drawElement is absent", () => {
-    makeFakeCtx(false);
+  it("detects fallback when drawElementImage is absent", () => {
+    patchContext(false);
     expect(detectMode()).toBe("fallback");
   });
 
-  it("detects native when drawElement is present on the 2d context", () => {
-    makeFakeCtx(true);
+  it("detects native when drawElementImage is present on the 2d context", () => {
+    patchContext(true);
     expect(detectMode()).toBe("native");
   });
 
-  it("drawHTMLOntoCanvas returns true when native path runs", () => {
-    const fx = makeFakeCtx(true);
-    __resetModeCacheForTests("native");
-    const el = document.createElement("div");
-    document.body.appendChild(el);
-    const native = drawHTMLOntoCanvas(fx.ctx, el, { x: 0, y: 0, width: 100, height: 100 });
-    expect(native).toBe(true);
-    expect(fx.drawElementCalls).toBe(1);
-    el.remove();
+  it("createHtmlCanvasSource returns null when the API is unavailable", () => {
+    patchContext(false);
+    expect(createHtmlCanvasSource({ width: 256, height: 256 })).toBeNull();
   });
 
-  it("drawHTMLOntoCanvas paints fallback and returns false when native is unavailable", () => {
-    const fx = makeFakeCtx(false);
-    __resetModeCacheForTests("fallback");
-    const el = document.createElement("div");
-    document.body.appendChild(el);
-    const native = drawHTMLOntoCanvas(fx.ctx, el, {
-      x: 0, y: 0, width: 200, height: 120,
-      fallbackLabel: "테스트"
-    });
-    expect(native).toBe(false);
-    expect(fx.fillCalls).toBeGreaterThan(0);
-    expect(fx.fillTextCalls).toBeGreaterThan(0);
-    el.remove();
+  it("createHtmlCanvasSource builds a layoutsubtree canvas with the panel as a direct child", () => {
+    const calls = patchContext(true);
+    const src = createHtmlCanvasSource({ width: 256, height: 128, dpr: 2 });
+    expect(src).not.toBeNull();
+    expect(src!.canvas.hasAttribute("layoutsubtree")).toBe(true);
+    expect(src!.panel.parentElement).toBe(src!.canvas); // direct child per spec
+    expect(src!.canvas.width).toBe(512);  // 256 * dpr 2
+    expect(src!.canvas.height).toBe(256); // 128 * dpr 2
+    expect(calls.drawCalls).toBeGreaterThan(0); // painted on creation
+    expect(document.body.contains(src!.canvas)).toBe(true);
+    src!.dispose();
+    expect(document.body.contains(src!.canvas)).toBe(false);
   });
 
-  it("downgrades to fallback if native call throws", () => {
-    const fx = makeFakeCtx(true);
-    fx.throwOnDraw = true;
-    __resetModeCacheForTests("native");
-    const el = document.createElement("div");
-    document.body.appendChild(el);
-    const native = drawHTMLOntoCanvas(fx.ctx, el, { x: 0, y: 0, width: 100, height: 100 });
-    expect(native).toBe(false);
-    expect(detectMode()).toBe("fallback");
-    el.remove();
+  it("fires the onPaint callback after a paint", () => {
+    patchContext(true);
+    let painted = 0;
+    const src = createHtmlCanvasSource({ width: 64, height: 64, onPaint: () => { painted++; } });
+    expect(painted).toBeGreaterThan(0);
+    src!.repaint();
+    expect(painted).toBeGreaterThan(1);
+    src!.dispose();
   });
 
   it("readOriginTrialToken returns the meta content or empty string", () => {
