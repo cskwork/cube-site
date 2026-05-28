@@ -29,6 +29,8 @@ export interface SceneHandles {
   iframe: HTMLIFrameElement;
   setIframeVisible(visible: boolean): void;
   setLiveFace(faceId: number): void;
+  /** Swap the live face's WebGL map to an external texture (html-canvas mode), or null to restore. */
+  setLiveFaceTexture(texture: THREE.Texture | null): void;
   setTargetUrl(url: string): void;
   setIdleSpin(on: boolean): void;
   pickFace(clientX: number, clientY: number): { faceId: number; u: number; v: number } | null;
@@ -259,7 +261,25 @@ export function createScene(
     return { faceId: faceIdx, u: hit.uv?.x ?? 0.5, v: 1 - (hit.uv?.y ?? 0.5) };
   }
 
-  function setLiveFace(faceId: number): void { currentLiveFace = faceId; }
+  // When the experimental html-canvas mode is active, the live face's map is
+  // swapped to an externally-driven CanvasTexture. Track it so we can restore
+  // the original face texture when the live face changes or the mode ends.
+  let liveTexOverride: THREE.Texture | null = null;
+  function setLiveFace(faceId: number): void {
+    if (liveTexOverride && materials[currentLiveFace]) {
+      materials[currentLiveFace].map = faces[currentLiveFace].texture;
+      materials[currentLiveFace].needsUpdate = true;
+      liveTexOverride = null;
+    }
+    currentLiveFace = faceId;
+  }
+  function setLiveFaceTexture(texture: THREE.Texture | null): void {
+    const mat = materials[currentLiveFace];
+    if (!mat) return;
+    mat.map = texture ?? faces[currentLiveFace].texture;
+    mat.needsUpdate = true;
+    liveTexOverride = texture;
+  }
   function setIframeVisible(visible: boolean): void {
     iframeVisibleRequested = visible;
     if (!visible) iframe.style.display = "none";
@@ -274,6 +294,9 @@ export function createScene(
     ro.disconnect();
     controls.dispose();
     materials.forEach((m) => m.dispose());
+    // material.dispose() does NOT free textures on material.map — dispose the
+    // face CanvasTextures explicitly or they leak GPU memory across remounts/HMR.
+    faces.forEach((f) => f.texture.dispose());
     geo.dispose();
     renderer.dispose();
     renderer.domElement.remove();
@@ -289,6 +312,7 @@ export function createScene(
     iframe,
     setIframeVisible,
     setLiveFace,
+    setLiveFaceTexture,
     setTargetUrl,
     setIdleSpin: (on: boolean) => { idleSpinAllowed = on; },
     pickFace,

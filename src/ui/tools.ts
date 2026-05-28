@@ -1,9 +1,13 @@
 import { el, on, copyText } from "../util/dom";
 import {
   applyPreset, defaultState, PRESETS, FACE_LABELS_KO,
-  type FaceId, type LiveMode, type PresetId, type Store
+  type AppState, type FaceId, type LiveMode, type PresetId, type Store
 } from "../app/state";
+
+/** A store write that should NOT trigger a panel rebuild (continuous edits). */
+type LiveUpdate = (mut: (s: AppState) => AppState) => void;
 import { buildShareUrl } from "../share/hash";
+import { detectMode } from "../htmlCanvas/adapter";
 import { toast } from "./toast";
 
 const STICKERS = [
@@ -31,6 +35,14 @@ export function createTools(store: Store): ToolsHandles {
   const tabBtns: Record<TabId, HTMLButtonElement> = {} as Record<TabId, HTMLButtonElement>;
   const body = el("div", { class: "tools-body" });
 
+  // See store.subscribe below: live() marks a store write as an in-place edit
+  // so the panel is not rebuilt mid-interaction (slider drag, color scrub).
+  let suppressRebuild = false;
+  const live: LiveUpdate = (mut) => {
+    suppressRebuild = true;
+    try { store.update(mut); } finally { suppressRebuild = false; }
+  };
+
   function makeTab(id: TabId, label: string): HTMLButtonElement {
     const b = el("button", {
       type: "button",
@@ -54,8 +66,8 @@ export function createTools(store: Store): ToolsHandles {
 
   function renderBody(): void {
     body.replaceChildren();
-    if (activeTab === "deco") renderDeco(body, store);
-    else if (activeTab === "imprint") renderImprint(body, store);
+    if (activeTab === "deco") renderDeco(body, store, live);
+    else if (activeTab === "imprint") renderImprint(body, store, live);
     else renderShare(body, store);
   }
 
@@ -95,14 +107,24 @@ export function createTools(store: Store): ToolsHandles {
   ]);
 
   renderBody();
-  store.subscribe(() => { if (activeTab !== "share") renderBody(); });
+  // The deco/imprint panels must refresh when state changes from OUTSIDE the
+  // panel (cube face click → selectedFace, reset, preset) so they reflect the
+  // active face. But a full rebuild while the user is dragging a slider or
+  // scrubbing a color picker would replace the very <input> being edited —
+  // breaking pointer-capture and stealing focus. So continuous in-panel edits
+  // route through live() below, which suppresses the rebuild for that update.
+  // The share tab self-manages its controls and is never auto-rebuilt.
+  store.subscribe(() => {
+    if (suppressRebuild || activeTab === "share") return;
+    renderBody();
+  });
 
   return { root, refresh: renderBody };
 }
 
 // ---------- 꾸미기 ----------
 
-function renderDeco(body: HTMLElement, store: Store): void {
+function renderDeco(body: HTMLElement, store: Store, live: LiveUpdate): void {
   const s = store.get();
 
   body.appendChild(section("테마 프리셋", [
@@ -142,11 +164,11 @@ function renderDeco(body: HTMLElement, store: Store): void {
 
   body.appendChild(section("색상과 효과", [
     sliderField("색조 (Hue)", s.hue, 0, 360, 1, "deg", (v) =>
-      store.update((st) => ({ ...st, hue: v }))),
+      live((st) => ({ ...st, hue: v }))),
     sliderField("발광 (Glow)", Math.round(s.glow * 100), 0, 100, 1, "%", (v) =>
-      store.update((st) => ({ ...st, glow: v / 100 }))),
+      live((st) => ({ ...st, glow: v / 100 }))),
     sliderField("모서리 둥글기", s.radius, 8, 40, 1, "px", (v) =>
-      store.update((st) => ({ ...st, radius: v }))),
+      live((st) => ({ ...st, radius: v }))),
     rowField("강조 색", el("input", {
       type: "color",
       class: "swatch",
@@ -155,7 +177,7 @@ function renderDeco(body: HTMLElement, store: Store): void {
     }), (input) => {
       on(input as HTMLInputElement, "input", (e) => {
         const v = (e.target as HTMLInputElement).value;
-        store.update((st) => ({ ...st, accent: v }));
+        live((st) => ({ ...st, accent: v }));
       });
     }),
     rowField(`${FACE_LABELS_KO[s.selectedFace]}면 색`, el("input", {
@@ -166,7 +188,7 @@ function renderDeco(body: HTMLElement, store: Store): void {
     }), (input) => {
       on(input as HTMLInputElement, "input", (e) => {
         const v = (e.target as HTMLInputElement).value;
-        store.update((st) => {
+        live((st) => {
           const fs = st.faces.slice();
           fs[st.selectedFace] = { ...fs[st.selectedFace], baseColor: v };
           return { ...st, faces: fs };
@@ -228,7 +250,7 @@ function renderDeco(body: HTMLElement, store: Store): void {
 
 // ---------- 글자 새기기 ----------
 
-function renderImprint(body: HTMLElement, store: Store): void {
+function renderImprint(body: HTMLElement, store: Store, live: LiveUpdate): void {
   const s = store.get();
   const cur = s.faces[s.selectedFace].imprint ?? {
     text: "",
@@ -257,7 +279,7 @@ function renderImprint(body: HTMLElement, store: Store): void {
   function writeImprint(): void {
     const t = (textInput as HTMLInputElement).value;
     if (!t.trim()) {
-      store.update((st) => {
+      live((st) => {
         const fs = st.faces.slice();
         const f = { ...fs[st.selectedFace] };
         delete f.imprint;
@@ -266,7 +288,7 @@ function renderImprint(body: HTMLElement, store: Store): void {
       });
       return;
     }
-    store.update((st) => {
+    live((st) => {
       const fs = st.faces.slice();
       const f = { ...fs[st.selectedFace] };
       f.imprint = {
@@ -342,21 +364,48 @@ function renderShare(body: HTMLElement, store: Store): void {
     ])
   ]));
 
-  // Live preview mode toggle.
-  const modeWrap = el("div", { class: "row", style: "gap:6px;width:100%;" });
-  (["iframe", "card"] as LiveMode[]).forEach((m) => {
-    const label = m === "iframe" ? "실제 사이트" : "스타일 카드";
+  // Live preview mode toggle. The html-canvas mode is the experimental
+  // HTML-in-Canvas (drawElementImage) path — only selectable when the browser
+  // actually supports it; otherwise it's shown disabled with an explanation.
+  const native = detectMode() === "native";
+  const MODES: { id: LiveMode; label: string }[] = [
+    { id: "iframe", label: "실제 사이트" },
+    { id: "card", label: "스타일 카드" },
+    { id: "html-canvas", label: "HTML-in-Canvas" }
+  ];
+  const modeWrap = el("div", { class: "row", style: "gap:6px;width:100%;flex-wrap:wrap;" });
+  const pills: HTMLButtonElement[] = [];
+  MODES.forEach(({ id, label }) => {
+    const gated = id === "html-canvas" && !native;
     const b = el("button", {
       type: "button",
       class: "mode-pill",
-      "aria-pressed": s.liveMode === m ? "true" : "false",
-      "data-mode": m
-    }, [label]);
-    on(b, "click", () => store.update((st) => ({ ...st, liveMode: m })));
+      "aria-pressed": s.liveMode === id ? "true" : "false",
+      "data-mode": id,
+      disabled: gated,
+      title: gated ? "Chrome 플래그(또는 Origin Trial)가 켜진 브라우저에서만 쓸 수 있는 실험 기능이에요." : undefined
+    }, [label]) as HTMLButtonElement;
+    if (!gated) {
+      on(b, "click", () => {
+        store.update((st) => ({ ...st, liveMode: id }));
+        // The share tab is not auto-rebuilt, so reflect the selection in place.
+        pills.forEach((p) =>
+          p.setAttribute("aria-pressed", p.getAttribute("data-mode") === id ? "true" : "false")
+        );
+      });
+    }
+    pills.push(b);
     modeWrap.appendChild(b);
   });
 
-  body.appendChild(section("미리보기 모드", [modeWrap]));
+  body.appendChild(section("미리보기 모드", [
+    modeWrap,
+    el("p", { class: "muted", style: "font-size:var(--t-12);margin:0;line-height:1.5;" }, [
+      native
+        ? "HTML-in-Canvas: 실제 HTML을 drawElementImage 로 큐브 면에 직접 그리는 실험 모드예요."
+        : "HTML-in-Canvas 모드는 Chrome 플래그(chrome://flags/#canvas-draw-element)나 Origin Trial 토큰이 있어야 켜져요."
+    ])
+  ]));
 
   body.appendChild(section("도움말", [
     el("ul", { class: "muted", style: "font-size:var(--t-14);padding-left:1.1rem;margin:0;line-height:1.7;" }, [
