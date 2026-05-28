@@ -1,36 +1,41 @@
 /**
  * htmlCanvasAdapter
  * ------------------------------------------------------------------
- * Stable internal wrapper around Chrome's HTML-element-in-Canvas2D
- * origin trial (https://developer.chrome.com/blog/html-in-canvas-origin-trial).
+ * Stable internal wrapper around Chrome's "HTML in Canvas" feature
+ * (WICG html-in-canvas, shipped behind an Origin Trial / the
+ * chrome://flags/#canvas-draw-element flag).
+ *
+ * The live API is `CanvasRenderingContext2D.drawElementImage(el, dx, dy)`
+ * (returns a DOMMatrix) — NOT the early `drawElement(el, x, y)` name.
+ * The element being drawn must be a DIRECT CHILD of a `<canvas layoutsubtree>`,
+ * and paints are demand-driven via `canvas.requestPaint()` + `canvas.onpaint`.
  *
  * Why a wrapper:
  *   The API is experimental — surface may shift across OT iterations.
- *   We expose one named function (drawHTMLOntoCanvas) that callers
- *   use; if the API moves, only this file changes.
+ *   Callers use detectMode() to gate UI and createHtmlCanvasSource() to get
+ *   a paintable canvas; if the spec moves, only this file changes.
  *
- * Surface:
- *   detectMode()     → "native" | "fallback"
- *   drawHTMLOntoCanvas(ctx, el, opts) → boolean (true if real, false if drawn fallback)
- *   waitForElementReady(el)            → Promise<void> (lets layout settle)
- *
- * Fallback:
- *   The fallback path paints a soft "snapshot card" representation
- *   so the dice face never goes blank. It's intentionally NOT
- *   html2canvas — that lib is 100+ KB. We keep zero deps.
+ * Browser reality (2026): Chromium 147+ with the flag, or Chrome 148–151
+ * with an Origin-Trial token. Never Firefox/Safari. So this path is always
+ * opt-in and capability-gated; non-supporting browsers use the iframe/card
+ * live modes instead.
  */
 
 export type AdapterMode = "native" | "fallback";
 
-interface CanvasCtxMaybeDraw extends CanvasRenderingContext2D {
-  drawElement?: (element: Element, x: number, y: number) => void;
+interface Ctx2DMaybe extends CanvasRenderingContext2D {
+  drawElementImage?: (el: Element, dx: number, dy: number, dw?: number, dh?: number) => DOMMatrix;
+}
+interface CanvasMaybePaint extends HTMLCanvasElement {
+  requestPaint?: () => void;
+  onpaint?: ((this: HTMLCanvasElement, ev: Event) => unknown) | null;
 }
 
 let _cachedMode: AdapterMode | null = null;
 
 /**
- * Detect once whether `CanvasRenderingContext2D.prototype.drawElement`
- * is present. Cached for the session.
+ * Detect once whether `CanvasRenderingContext2D.prototype.drawElementImage`
+ * is available. Cached for the session.
  */
 export function detectMode(): AdapterMode {
   if (_cachedMode !== null) return _cachedMode;
@@ -39,9 +44,8 @@ export function detectMode(): AdapterMode {
     return _cachedMode;
   }
   try {
-    const probe = document.createElement("canvas").getContext("2d") as CanvasCtxMaybeDraw | null;
-    const hasFn = !!(probe && typeof probe.drawElement === "function");
-    _cachedMode = hasFn ? "native" : "fallback";
+    const probe = document.createElement("canvas").getContext("2d") as Ctx2DMaybe | null;
+    _cachedMode = probe && typeof probe.drawElementImage === "function" ? "native" : "fallback";
   } catch {
     _cachedMode = "fallback";
   }
@@ -53,120 +57,100 @@ export function __resetModeCacheForTests(forced?: AdapterMode | null): void {
   _cachedMode = forced ?? null;
 }
 
-export interface DrawOptions {
-  /** Top-left of paint area on the target canvas, in CSS pixels. */
-  x: number;
-  y: number;
-  /** Box used for the fallback paint. The native path uses the element's own layout box. */
+export interface CreateSourceOptions {
+  /** CSS-pixel width of the panel / drawn region. */
   width: number;
+  /** CSS-pixel height of the panel / drawn region. */
   height: number;
-  /** Optional label rendered on the fallback card. */
-  fallbackLabel?: string;
-  /** Optional accent color for the fallback. */
-  fallbackAccent?: string;
+  /** Device pixel ratio for crispness (default 1). */
+  dpr?: number;
+  /** Called after each successful drawElementImage paint. */
+  onPaint?: () => void;
+}
+
+export interface HtmlCanvasSource {
+  /** The layoutsubtree canvas — also the 2D paint target. Use as a texture source. */
+  canvas: HTMLCanvasElement;
+  /** The direct-child element to populate with live HTML. */
+  panel: HTMLElement;
+  /** Request a fresh paint of the panel into the canvas. */
+  repaint(): void;
+  /** Remove the canvas from the DOM and detach handlers. */
+  dispose(): void;
 }
 
 /**
- * Paint a live HTML element onto a 2D canvas context.
- * Returns true if the native OT path executed; false if fallback was used.
+ * Create a hidden `<canvas layoutsubtree>` whose direct child (`panel`) is
+ * painted into the canvas via drawElementImage. Returns null when the API is
+ * unavailable so callers can fall back without try/catch.
  *
- * The element MUST be in the DOM (off-screen is fine) and rendered for
- * native drawElement to work — see waitForElementReady().
+ * Spec notes honored here:
+ *   - canvas carries the `layoutsubtree` attribute
+ *   - the drawn element is a DIRECT child of the canvas
+ *   - the canvas is NOT display:none (that would strip the child's boxes);
+ *     it is positioned off-screen and made transparent instead
  */
-export function drawHTMLOntoCanvas(
-  ctx: CanvasRenderingContext2D,
-  element: HTMLElement,
-  opts: DrawOptions
-): boolean {
-  if (detectMode() === "native") {
+export function createHtmlCanvasSource(opts: CreateSourceOptions): HtmlCanvasSource | null {
+  if (detectMode() !== "native" || typeof document === "undefined") return null;
+
+  const dpr = Math.max(1, opts.dpr ?? 1);
+  const { width, height } = opts;
+
+  const canvas = document.createElement("canvas") as CanvasMaybePaint;
+  canvas.setAttribute("layoutsubtree", "");
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  Object.assign(canvas.style, {
+    position: "fixed",
+    left: "0px",
+    top: "0px",
+    width: `${width}px`,
+    height: `${height}px`,
+    opacity: "0",
+    pointerEvents: "none",
+    zIndex: "-1"
+  } satisfies Partial<CSSStyleDeclaration>);
+
+  const panel = document.createElement("div");
+  panel.style.width = `${width}px`;
+  panel.style.height = `${height}px`;
+  canvas.appendChild(panel); // MUST be a direct child of the canvas
+  document.body.appendChild(canvas);
+
+  const ctx = canvas.getContext("2d") as Ctx2DMaybe | null;
+
+  function paint(): void {
+    if (!ctx || typeof ctx.drawElementImage !== "function") return;
     try {
-      const c = ctx as CanvasCtxMaybeDraw;
-      c.drawElement!(element, opts.x, opts.y);
-      return true;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // map CSS px → device px
+      ctx.clearRect(0, 0, width, height);
+      ctx.drawElementImage(panel, 0, 0);
+      opts.onPaint?.();
     } catch (e) {
-      console.warn("[htmlCanvas] native drawElement threw; falling back.", e);
-      _cachedMode = "fallback";
+      console.warn("[htmlCanvas] drawElementImage failed; live-canvas paint skipped.", e);
     }
   }
-  drawFallback(ctx, opts);
-  return false;
-}
 
-/**
- * Soft fallback: paints a representative "snapshot card" so the
- * dice face never goes blank for non-OT browsers.
- */
-function drawFallback(ctx: CanvasRenderingContext2D, o: DrawOptions): void {
-  const { x, y, width: w, height: h } = o;
-  ctx.save();
-  // background card
-  const grad = ctx.createLinearGradient(x, y, x + w, y + h);
-  grad.addColorStop(0, "#1b2238");
-  grad.addColorStop(1, "#0b0f1a");
-  ctx.fillStyle = grad;
-  roundRect(ctx, x, y, w, h, Math.min(24, h * 0.06));
-  ctx.fill();
-  // accent ring
-  ctx.strokeStyle = o.fallbackAccent ?? "#a78bfa";
-  ctx.lineWidth = Math.max(2, h * 0.008);
-  roundRect(ctx, x + 6, y + 6, w - 12, h - 12, Math.min(22, h * 0.055));
-  ctx.stroke();
-  // headline
-  ctx.fillStyle = "#f7f8ff";
-  ctx.font = `700 ${Math.round(h * 0.10)}px "Pretendard Variable", "Apple SD Gothic Neo", system-ui, sans-serif`;
-  ctx.textBaseline = "top";
-  ctx.fillText("라이브 사이트 미리보기", x + w * 0.08, y + h * 0.12);
-  // subline
-  ctx.fillStyle = "#c8cdf2";
-  ctx.font = `500 ${Math.round(h * 0.055)}px "Pretendard Variable", "Apple SD Gothic Neo", system-ui, sans-serif`;
-  ctx.fillText(o.fallbackLabel ?? "Chrome 플래그를 켜면 실시간 미리보기로 바뀌어요.", x + w * 0.08, y + h * 0.26);
-  // mock CTA
-  const ctaX = x + w * 0.08;
-  const ctaY = y + h * 0.6;
-  const ctaW = w * 0.42;
-  const ctaH = h * 0.18;
-  const ctaGrad = ctx.createLinearGradient(ctaX, ctaY, ctaX + ctaW, ctaY + ctaH);
-  ctaGrad.addColorStop(0, "#a78bfa");
-  ctaGrad.addColorStop(1, "#22d3ee");
-  ctx.fillStyle = ctaGrad;
-  roundRect(ctx, ctaX, ctaY, ctaW, ctaH, ctaH / 2);
-  ctx.fill();
-  ctx.fillStyle = "#0b0f1a";
-  ctx.font = `800 ${Math.round(ctaH * 0.42)}px "Pretendard Variable", "Apple SD Gothic Neo", system-ui, sans-serif`;
-  ctx.textBaseline = "middle";
-  ctx.fillText("입장 →", ctaX + ctaW * 0.14, ctaY + ctaH / 2);
-  ctx.restore();
-}
+  canvas.onpaint = () => paint();
 
-function roundRect(
-  ctx: CanvasRenderingContext2D,
-  x: number, y: number, w: number, h: number, r: number
-): void {
-  const radius = Math.min(r, Math.min(w, h) / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + radius, y);
-  ctx.arcTo(x + w, y, x + w, y + h, radius);
-  ctx.arcTo(x + w, y + h, x, y + h, radius);
-  ctx.arcTo(x, y + h, x, y, radius);
-  ctx.arcTo(x, y, x + w, y, radius);
-  ctx.closePath();
-}
+  function repaint(): void {
+    if (typeof canvas.requestPaint === "function") canvas.requestPaint();
+    else paint(); // no requestPaint() → paint synchronously
+  }
+  repaint(); // first frame
 
-/**
- * Wait two animation frames so layout / fonts settle before drawElement.
- * Native drawElement reads the element's current visual state.
- */
-export function waitForElementReady(): Promise<void> {
-  return new Promise<void>((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-  });
+  function dispose(): void {
+    canvas.onpaint = null;
+    canvas.remove();
+  }
+
+  return { canvas, panel, repaint, dispose };
 }
 
 /**
  * Read the configured Origin Trial token from the document. Empty string
- * means the build was made without OT_TOKEN env var — that is fine for
- * local dev where Chrome flag (#enable-experimental-web-platform-features)
- * can substitute for an OT meta.
+ * means the build was made without OT_TOKEN — fine for local dev where the
+ * chrome://flags/#canvas-draw-element flag substitutes for an OT meta.
  */
 export function readOriginTrialToken(): string {
   if (typeof document === "undefined") return "";

@@ -6,7 +6,14 @@
 
 export type PresetId = "y2k" | "aero" | "pastel" | "holo" | "bento";
 export type FaceId = 0 | 1 | 2 | 3 | 4 | 5;
-export type LiveMode = "iframe" | "card";
+/**
+ * Live-face source:
+ *  - "iframe":      real interactive <iframe> overlay (default, all browsers)
+ *  - "card":        styled Canvas2D preview card painted on the WebGL face
+ *  - "html-canvas": experimental — live HTML painted onto the face via the
+ *                   Chrome HTML-in-Canvas API (drawElementImage). Flag/OT-gated.
+ */
+export type LiveMode = "iframe" | "card" | "html-canvas";
 
 export interface FaceImprint {
   text: string;
@@ -203,16 +210,68 @@ export function clearStorage(): void {
   try { localStorage.removeItem(LS_KEY); } catch { /* ignore */ }
 }
 
-function validate(s: AppState): AppState {
-  // Minimal forward-compat validation. If shape is off, fall back to default.
+/** Coerce any value into a valid FaceId (0..5); fall back to `def`. */
+function toFaceId(v: unknown, def: FaceId): FaceId {
+  return Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 5
+    ? (v as FaceId)
+    : def;
+}
+
+const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+/**
+ * A safe CSS hex color. Colors from untrusted state reach two unsafe sinks:
+ * hexToRgb() in faceTextures (string ops that throw on non-strings) and a raw
+ * CSS `setAttribute("style", …)` interpolation in livePanel (CSS-injection).
+ * Gating them here closes both.
+ */
+function isHexColor(v: unknown): v is string {
+  return typeof v === "string" && HEX_COLOR.test(v);
+}
+
+/**
+ * Forward-compat + corruption-proof validation. Runs on every state that
+ * enters from an untrusted source (localStorage, URL hash). Returns a new,
+ * immutable copy — never mutates the input. If the shape is fundamentally
+ * wrong, falls back to a fresh default state.
+ */
+export function validate(s: AppState): AppState {
   if (s?.version !== 1 || !Array.isArray(s.faces) || s.faces.length !== 6) {
     return defaultState();
   }
-  if (s.liveMode !== "iframe" && s.liveMode !== "card") {
+  if (s.liveMode !== "iframe" && s.liveMode !== "card" && s.liveMode !== "html-canvas") {
     s = { ...s, liveMode: "iframe" };
   }
   if (typeof s.targetUrl !== "string" || s.targetUrl.length === 0) {
     s = { ...s, targetUrl: defaultTargetUrl() };
   }
+  // Clamp face indices — an out-of-range liveFace makes FACE_CORNERS[liveFace]
+  // undefined and kills the render loop; selectedFace indexes faces[] in the UI.
+  const liveFace = toFaceId(s.liveFace, 4);
+  const selectedFace = toFaceId(s.selectedFace, 4);
+  if (liveFace !== s.liveFace || selectedFace !== s.selectedFace) {
+    s = { ...s, liveFace, selectedFace };
+  }
+  // accent flows into hexToRgb (crash) and a raw CSS interpolation (injection).
+  if (!isHexColor(s.accent)) {
+    s = { ...s, accent: PRESETS[s.preset]?.accent ?? defaultState().accent };
+  }
+  // Normalize every face: guard null/non-object entries, validate baseColor and
+  // imprint.color (both reach unsafe color sinks), and backfill stickers[].
+  const def = defaultState();
+  s = {
+    ...s,
+    faces: s.faces.map((f, i) => {
+      const base = (f && typeof f === "object" ? f : {}) as FaceState;
+      const baseColor = isHexColor(base.baseColor)
+        ? base.baseColor
+        : (PRESETS[s.preset]?.faceColors[i] ?? def.faces[i].baseColor);
+      const stickers = Array.isArray(base.stickers) ? base.stickers : [];
+      const imprint =
+        base.imprint && !isHexColor(base.imprint.color)
+          ? { ...base.imprint, color: "#ffffff" }
+          : base.imprint;
+      return { ...base, baseColor, stickers, imprint };
+    })
+  };
   return s;
 }

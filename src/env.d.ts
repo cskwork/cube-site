@@ -12,12 +12,24 @@ declare const __TARGET_SITE__: {
   tagline: string;
 };
 
+// Chrome "HTML in Canvas" (WICG html-in-canvas). The shipped Origin-Trial
+// surface is drawElementImage(...) returning a DOMMatrix — NOT the early
+// drawElement(el,x,y) name. The element must be a direct child of a
+// <canvas layoutsubtree>; paints are demand-driven via requestPaint()/onpaint.
+// https://wicg.github.io/html-in-canvas/
 interface CanvasRenderingContext2D {
-  // Chrome Origin Trial: HTML element in Canvas2D.
-  // https://developer.chrome.com/blog/html-in-canvas-origin-trial
-  drawElement?: (element: Element, x: number, y: number) => void;
+  drawElementImage?: (
+    element: Element,
+    dx: number,
+    dy: number,
+    dw?: number,
+    dh?: number
+  ) => DOMMatrix;
 }
 
 interface HTMLCanvasElement {
-  drawElement?: (element: Element, x: number, y: number) => void;
+  /** Schedule a paint of the canvas layout-subtree children. */
+  requestPaint?: () => void;
+  /** Fires when a layout-subtree child's rendering changes. */
+  onpaint?: ((this: HTMLCanvasElement, ev: Event) => unknown) | null;
 }
