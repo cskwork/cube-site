@@ -23,8 +23,11 @@ A Three.js 3D site-portal: one cube face shows a live, interactive `<iframe>` of
 - **Cube IS the site.** One face of the cube is a real `<iframe>`, screen-tracked to the live face each frame over the Three.js WebGL canvas. You click buttons, scroll, type, submit forms — through the cube. (A 2D overlay was chosen over `CSS3DRenderer` because Chrome's CSS-3D iframe hit-testing is unreliable.)
 - **Three live-face modes.** `실제 사이트` (interactive iframe, default), `스타일 카드` (a Canvas2D site-preview card for sites that block framing), and `HTML-in-Canvas` (experimental — see below).
 - **Decorate the other 5 faces.** 5 trend presets (Y2K Cyber, Frutiger Aero, Soft Pastel, Holographic, Bento), color/glow/hue/radius sliders, 24 emoji stickers, per-face text imprint.
-- **Swap any URL at runtime.** A `라이브 사이트 URL` field in the 공유 tab — paste any URL, hit 적용, and the cube becomes that site.
+- **Swap any URL at runtime.** Paste any URL into the address strip above the viewfinder, hit 띄우기, and the cube becomes that site. A loading state shows while it loads, with a hint if the site blocks framing.
 - **Share via URL hash.** The decoration state AND the active URL serialize to a compact base64url hash. Copy the link, paste in another tab/device, identical cube reappears.
+- **네컷 출력.** Print the decorated cube as a four-frame photo-booth strip (600×1800 PNG). Save it, or send it with the Web Share API where supported.
+- **Undo / redo.** Every edit can be undone (Ctrl/⌘ Z, Shift+Ctrl/⌘ Z, or the footer keys). Reset is undoable, so it no longer asks for confirmation.
+- **View keys + keyboard orbit.** 사이트 정면 / 둘러보기 / turn left / turn right, plus arrow keys, Home and End on the focused cube, so rotating never requires a drag.
 - **Pure static site.** Vite + TypeScript + Three.js. `npm run build` emits `dist/` that drops onto GitHub Pages / Vercel / Netlify / Cloudflare Pages / S3 with no backend.
 - **Korean-first UI** following the [10 award-worthy web design rules](https://github.com/cskwork/web-design-10-rules) — tokens, 8pt rhythm, instant 5-second clarity, prefers-reduced-motion, WCAG-grade focus rings.
 
@@ -53,7 +56,7 @@ Chrome's [HTML-in-Canvas](https://developer.chrome.com/blog/html-in-canvas-origi
 2. On each `onpaint`, `ctx.drawElementImage(panel, 0, 0)` snapshots that DOM into the canvas ([`src/htmlCanvas/adapter.ts`](src/htmlCanvas/adapter.ts)).
 3. That canvas backs a `THREE.CanvasTexture` mapped onto the rotating cube's live face ([`src/htmlCanvas/liveFace.ts`](src/htmlCanvas/liveFace.ts)) — so it's genuinely *HTML → canvas → WebGL*.
 
-The adapter feature-detects `ctx.drawElementImage` (`detectMode()`); the [status banner](src/ui/banner.ts) reports whether native mode is active, and the mode pill is disabled with an explanation when it isn't.
+The adapter feature-detects `ctx.drawElementImage` (`detectMode()`); the status chip under the viewfinder ([`src/ui/stage.ts`](src/ui/stage.ts)) reports whether native mode is active, and the mode pill is disabled with an explanation when it isn't.
 
 **This is an experimental, single-browser feature** — it runs only on Chromium 147+ with the `chrome://flags/#canvas-draw-element` flag, or Chrome 148–151 with an Origin-Trial token; never Firefox/Safari. So `실제 사이트` (iframe) is the honest cross-browser default, and the `HTML-in-Canvas` mode gracefully falls back to the iframe when unsupported.
 
@@ -61,7 +64,7 @@ The adapter feature-detects `ctx.drawElementImage` (`detectMode()`); the [status
 
 - **GitHub Pages (production):** https://cskwork.github.io/cube-site/
 
-To experience the experimental HTML-in-Canvas mode, open it in Chrome/Brave 147+ with `chrome://flags/#canvas-draw-element` enabled, then pick `HTML-in-Canvas` in the 공유 tab's 미리보기 모드.
+To experience the experimental HTML-in-Canvas mode, open it in Chrome/Brave 147+ with `chrome://flags/#canvas-draw-element` enabled, then pick `HTML-in-Canvas` in the mode switch next to the address strip.
 
 ## 📦 Deploy
 
@@ -114,11 +117,11 @@ The bundled `deploy/*.sh` scripts cover all four.
 
 ## ⚙️ Configuration
 
-Everything is optional — the app boots with sane defaults and the 공유 tab lets users override the URL at runtime.
+Everything is optional — the app boots with sane defaults and the address strip lets users override the URL at runtime.
 
 | Env var | Default | Notes |
 |---------|---------|-------|
-| `TARGET_URL` | `https://example.com` | Default URL the cube loads. Runtime-overridable in 공유 tab. |
+| `TARGET_URL` | `https://example.com` | Default URL the cube loads. Runtime-overridable in the address strip. |
 | `TARGET_NAME` | `Live Site` | Brand text shown in the styled "card" fallback mode. |
 | `TARGET_TITLE` | `내 사이트,\n바로 입장` | Card mode hero title. |
 | `TARGET_SUB` | `원하는 어떤 URL이든 큐브 안에 띄울 수 있어요.` | Card mode subline. |
@@ -145,24 +148,32 @@ npm run verify      # typecheck + test + build (CI gate)
 src/
 ├── main.ts
 ├── app/
-│   ├── bootstrap.ts        wires state, scene, tools, live-canvas, banner
+│   ├── bootstrap.ts        wires state, history, scene, stage chrome, tools, live-canvas
 │   ├── state.ts            AppState + Store + localStorage + validate()
-│   └── state.test.ts
+│   ├── state.test.ts
+│   ├── history.ts          undo / redo stack (bursts of edits collapse)
+│   └── history.test.ts
 ├── htmlCanvas/
 │   ├── adapter.ts          drawElementImage detect + <canvas layoutsubtree> source
 │   ├── adapter.test.ts
 │   ├── livePanel.ts        the live DOM painted onto the face
 │   └── liveFace.ts         drawElementImage → CanvasTexture → cube controller
 ├── dice/
-│   ├── scene.ts            Three.js cube + 2D iframe overlay + live-face texture swap
+│   ├── scene.ts            Three.js cube + 2D iframe overlay + view tweens + capture
+│   ├── views.ts            camera viewpoints (front / overview / orbit) as pure math
+│   ├── views.test.ts
 │   └── faceTextures.ts     per-face CanvasTexture painter (+ live preview card)
 ├── share/
 │   ├── hash.ts             state ↔ base64url URL-hash codec (validated)
-│   └── hash.test.ts
+│   ├── hash.test.ts
+│   ├── printStrip.ts       네컷 four-angle photo strip composer
+│   └── printStrip.test.ts
 ├── ui/
-│   ├── tools.ts            tabs + URL input + mode pills + footer
+│   ├── tools.ts            step tabs + deco/imprint/share panels + footer
 │   ├── tools.test.ts
-│   ├── banner.ts           HTML-in-Canvas status banner
+│   ├── stage.ts            address strip, mode switch, view keys, loading, coach
+│   ├── printPanel.ts       네컷 출력 section
+│   ├── icons.ts            authored SVG icon set
 │   └── toast.ts
 ├── util/dom.ts
 └── styles/
@@ -175,7 +186,7 @@ src/
 ## ⚠️ Known limitations
 
 - **Cross-origin popups.** A target site's `target="_blank"` links or `window.open` calls cannot be redirected back into the cube iframe — by browser security spec, cross-origin documents can't be re-targeted from outside. For same-origin targets, the app injects `<base target="_self">` on load so internal nav stays in-cube.
-- **X-Frame-Options.** Sites that serve `X-Frame-Options: DENY` or strict `Content-Security-Policy: frame-ancestors` will load blank. Toggle the 공유 tab's "스타일 카드" mode to hide the empty iframe and show the WebGL face decoration instead.
+- **X-Frame-Options.** Sites that serve `X-Frame-Options: DENY` or strict `Content-Security-Policy: frame-ancestors` will load blank. Switch the address strip's "스타일 카드" mode to hide the empty iframe and show the WebGL face decoration instead.
 - **HTML-in-Canvas is experimental & Chromium-only.** The `HTML-in-Canvas` mode needs Chromium 147+ with `chrome://flags/#canvas-draw-element`, or an Origin-Trial token (trial runs ~M148–M151, 2026; it expires). Firefox/Safari are unsupported. The iframe/card modes need none of this and work everywhere.
 - **Origin Trial on a real deploy.** GitHub Pages cannot send an `Origin-Trial` response header, so the only way to enable the OT in production is the `<meta http-equiv="origin-trial">` slot — set the `OT_TOKEN` repo secret (CI injects it via `%OT_TOKEN%`) with a token registered for `https://cskwork.github.io`. Note: `*.vercel.app` is on the Public Suffix List, so no wildcard Vercel token can be issued — use a custom domain (Vercel *can* set the `Origin-Trial` response header) or register per preview URL.
 

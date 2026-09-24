@@ -16,6 +16,19 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { FaceTexture } from "./faceTextures";
+import { easeOutExpo, frontOf, orbit, overviewOf, slerpPosition, type Vec3 } from "./views";
+
+export type ViewKind = "front" | "overview";
+
+/** Camera distance for the default framing. */
+const VIEW_DISTANCE = 3.6;
+/**
+ * How squarely the live face must point at the camera before the flat 2D
+ * iframe is laid over it. The iframe cannot tilt, so at oblique angles it
+ * would float as a rectangle over the cube; below this threshold the painted
+ * WebGL face shows instead, and the cube reads as a cube.
+ */
+const IFRAME_FACING_DOT = -0.8;
 
 const CUBE_SIZE = 1.6;
 const HALF = CUBE_SIZE / 2;
@@ -34,6 +47,12 @@ export interface SceneHandles {
   setTargetUrl(url: string): void;
   setIdleSpin(on: boolean): void;
   pickFace(clientX: number, clientY: number): { faceId: number; u: number; v: number } | null;
+  /** Move the camera to a named viewpoint of the live face. */
+  setView(kind: ViewKind, opts?: { animate?: boolean; durationMs?: number }): void;
+  /** Orbit the camera by azimuth / polar steps (radians). */
+  orbitBy(dTheta: number, dPhi?: number): void;
+  /** Render the cube from each camera position into its own 2D canvas (transparent ground). */
+  captureViews(positions: Vec3[], width: number, height: number): HTMLCanvasElement[];
   dispose(): void;
 }
 
@@ -70,7 +89,7 @@ export function createScene(
 ): SceneHandles {
   // ---------- camera ----------
   const camera = new THREE.PerspectiveCamera(36, 1, 0.1, 100);
-  camera.position.set(0, 0, 3.6);
+  camera.position.set(...frontOf(initialLiveFace, VIEW_DISTANCE));
   camera.lookAt(0, 0, 0);
 
   // ---------- WebGL scene ----------
@@ -180,7 +199,7 @@ export function createScene(
   const camDir = new THREE.Vector3();
 
   function syncIframeRect(): void {
-    if (!iframeVisibleRequested || rotating) {
+    if (!iframeVisibleRequested || rotating || tween) {
       if (iframe.style.display !== "none") iframe.style.display = "none";
       return;
     }
@@ -192,7 +211,7 @@ export function createScene(
     cube.getWorldQuaternion(_tmpQuat).normalize();
     faceNormalWorld.applyQuaternion(_tmpQuat);
     camera.getWorldDirection(camDir);
-    const facing = faceNormalWorld.dot(camDir) < -0.05; // small margin to avoid jitter at near-90°
+    const facing = faceNormalWorld.dot(camDir) < IFRAME_FACING_DOT;
 
     if (!facing) {
       if (iframe.style.display !== "none") iframe.style.display = "none";
@@ -232,13 +251,38 @@ export function createScene(
     iframe.style.height = `${height}px`;
   }
 
+  // ---------- camera tweens (view keys, keyboard orbit) ----------
+  let tween: { from: Vec3; to: Vec3; start: number; dur: number } | null = null;
+  const reducedMotion = typeof matchMedia === "function"
+    && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function currentPos(): Vec3 {
+    return [camera.position.x, camera.position.y, camera.position.z];
+  }
+  function moveCamera(to: Vec3, animate = true, dur = 520): void {
+    if (!animate || reducedMotion) {
+      tween = null;
+      camera.position.set(...to);
+      controls.update();
+      return;
+    }
+    tween = { from: currentPos(), to, start: performance.now(), dur };
+  }
+  function stepTween(now: number): void {
+    if (!tween) return;
+    const t = Math.min(1, (now - tween.start) / tween.dur);
+    camera.position.set(...slerpPosition(tween.from, tween.to, easeOutExpo(t)));
+    if (t >= 1) tween = null;
+  }
+
   // ---------- RAF loop ----------
   let rafId = 0;
-  function frame(): void {
+  function frame(now: number): void {
     if (idleSpinAllowed && !rotating) {
       cube.rotation.y += 0.0018;
       cube.rotation.x += 0.0006;
     }
+    stepTween(now);
     controls.update();
     syncIframeRect();
     renderer.render(scene, camera);
@@ -289,6 +333,41 @@ export function createScene(
     iframe.src = url;
   }
 
+  function setView(kind: ViewKind, opts: { animate?: boolean; durationMs?: number } = {}): void {
+    const dist = Math.max(controls.minDistance, Math.min(controls.maxDistance, VIEW_DISTANCE));
+    const to = kind === "front" ? frontOf(currentLiveFace, dist) : overviewOf(currentLiveFace, dist);
+    moveCamera(to, opts.animate ?? true, opts.durationMs);
+  }
+  function orbitBy(dTheta: number, dPhi = 0): void {
+    const from = tween ? tween.to : currentPos();
+    moveCamera(orbit(from, dTheta, dPhi), true, 360);
+  }
+
+  function captureViews(positions: Vec3[], width: number, height: number): HTMLCanvasElement[] {
+    const r = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    try {
+      r.setPixelRatio(1);
+      r.setSize(width, height, false);
+      r.outputColorSpace = renderer.outputColorSpace;
+      r.toneMapping = renderer.toneMapping;
+      r.toneMappingExposure = renderer.toneMappingExposure;
+      const cam = new THREE.PerspectiveCamera(camera.fov, width / height, 0.1, 100);
+      return positions.map((p) => {
+        cam.position.set(...p);
+        cam.lookAt(0, 0, 0);
+        r.render(scene, cam);
+        const out = document.createElement("canvas");
+        out.width = width;
+        out.height = height;
+        out.getContext("2d")?.drawImage(r.domElement, 0, 0);
+        return out;
+      });
+    } finally {
+      r.dispose();
+      r.forceContextLoss();
+    }
+  }
+
   function dispose(): void {
     cancelAnimationFrame(rafId);
     ro.disconnect();
@@ -316,6 +395,9 @@ export function createScene(
     setTargetUrl,
     setIdleSpin: (on: boolean) => { idleSpinAllowed = on; },
     pickFace,
+    setView,
+    orbitBy,
+    captureViews,
     dispose
   };
 }
