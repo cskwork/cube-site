@@ -16,8 +16,9 @@ import { createFaceTextures, repaintFace, repaintLiveFace } from "../dice/faceTe
 import { createScene } from "../dice/scene";
 import { el, on, debounce } from "../util/dom";
 import { createTools } from "../ui/tools";
-import { createBanner } from "../ui/banner";
 import { detectMode } from "../htmlCanvas/adapter";
+import { History } from "./history";
+import { createStageChrome } from "../ui/stage";
 import { createLiveFaceController } from "../htmlCanvas/liveFace";
 
 export function bootstrap(root: HTMLElement): void {
@@ -27,11 +28,16 @@ export function bootstrap(root: HTMLElement): void {
   const shell = el("div", { class: "app-shell" });
   root.appendChild(shell);
 
-  const stage = el("section", { class: "app-stage", "aria-label": "3D 사이트 큐브" });
+  const asset = (p: string) => `${import.meta.env.BASE_URL}${p}`;
+  const chrome = createStageChrome(store, { coachArt: asset("img/coach.webp") });
+  const viewfinder = el("div", { class: "viewfinder" });
+  const stage = el("section", { class: "app-stage", "aria-label": "3D 사이트 큐브" }, [
+    chrome.bar, viewfinder, chrome.keys
+  ]);
   shell.appendChild(stage);
 
   const faces = createFaceTextures();
-  const scene = createScene(stage, faces, initial.liveFace, initial.targetUrl);
+  const scene = createScene(viewfinder, faces, initial.liveFace, initial.targetUrl);
 
   // Experimental HTML-in-Canvas live face (drawElementImage → CanvasTexture).
   // Opt-in + capability-gated; controller is a no-op on unsupported browsers.
@@ -46,12 +52,30 @@ export function bootstrap(root: HTMLElement): void {
   scene.setIframeVisible(wantIframe(initial));
   liveCanvas.reconcile();
 
-  // Status banner — honestly reports whether native HTML-in-Canvas is active.
-  const banner = createBanner(detectMode());
-  stage.appendChild(banner.root);
+  chrome.attach(scene, viewfinder);
 
-  const tools = createTools(store);
+  // First look: start on the shoulder so the cube reads as a cube, then turn
+  // to face the site. Reduced-motion users land on the front view directly.
+  scene.setView("overview", { animate: false });
+  window.setTimeout(() => scene.setView("front", { durationMs: 900 }), 700);
+
+  const history = new History(store);
+  const tools = createTools(store, {
+    history,
+    print: { capture: scene.captureViews, emptyArt: asset("img/print-empty.webp") }
+  });
   shell.appendChild(tools.root);
+
+  // Undo / redo shortcuts. Text fields keep their native undo.
+  on(document, "keydown", (ev) => {
+    const e = ev as KeyboardEvent;
+    if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.isContentEditable || (t.tagName === "INPUT" && !["range", "color", "button"].includes((t as HTMLInputElement).type)) || t.tagName === "TEXTAREA")) return;
+    const k = e.key.toLowerCase();
+    if (k === "z" && !e.shiftKey) { if (history.undo()) e.preventDefault(); }
+    else if ((k === "z" && e.shiftKey) || k === "y") { if (history.redo()) e.preventDefault(); }
+  });
 
   // ---------- repaint pipeline ----------
   // Every face (including the live one) gets its decoration painted onto
@@ -78,7 +102,7 @@ export function bootstrap(root: HTMLElement): void {
     const s = store.get();
     if (s.targetUrl !== lastState.targetUrl) scene.setTargetUrl(s.targetUrl);
     if (s.liveMode !== lastState.liveMode) scene.setIframeVisible(wantIframe(s));
-    if (s.liveFace !== lastState.liveFace) scene.setLiveFace(s.liveFace);
+    if (s.liveFace !== lastState.liveFace) { scene.setLiveFace(s.liveFace); scene.setView("front"); }
     repaintAll();
     liveCanvas.reconcile();
     persist();

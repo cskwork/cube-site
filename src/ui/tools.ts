@@ -1,14 +1,16 @@
 import { el, on, copyText } from "../util/dom";
 import {
   applyPreset, defaultState, PRESETS, FACE_LABELS_KO,
-  type AppState, type FaceId, type LiveMode, type PresetId, type Store
+  type AppState, type FaceId, type PresetId, type Store
 } from "../app/state";
+import type { History } from "../app/history";
+import { buildShareUrl } from "../share/hash";
+import { toast } from "./toast";
+import { icon } from "./icons";
+import { createPrintSection, type PrintDeps } from "./printPanel";
 
 /** A store write that should NOT trigger a panel rebuild (continuous edits). */
 type LiveUpdate = (mut: (s: AppState) => AppState) => void;
-import { buildShareUrl } from "../share/hash";
-import { detectMode } from "../htmlCanvas/adapter";
-import { toast } from "./toast";
 
 const STICKERS = [
   "🌸", "🍑", "🍓", "⭐", "✨", "💖", "🪐", "🌈",
@@ -28,9 +30,17 @@ export interface ToolsHandles {
   refresh(): void;
 }
 
+export interface ToolsOptions {
+  /** Undo/redo stack; when absent the history keys are omitted. */
+  history?: History;
+  /** 네컷 출력 renderer; when absent the print section is omitted. */
+  print?: PrintDeps;
+}
+
 type TabId = "deco" | "imprint" | "share";
 
-export function createTools(store: Store): ToolsHandles {
+export function createTools(store: Store, opts: ToolsOptions = {}): ToolsHandles {
+  const { history } = opts;
   let activeTab: TabId = "deco";
   const tabBtns: Record<TabId, HTMLButtonElement> = {} as Record<TabId, HTMLButtonElement>;
   const body = el("div", { class: "tools-body" });
@@ -43,51 +53,102 @@ export function createTools(store: Store): ToolsHandles {
     try { store.update(mut); } finally { suppressRebuild = false; }
   };
 
-  function makeTab(id: TabId, label: string): HTMLButtonElement {
+  const TAB_ORDER: TabId[] = ["deco", "imprint", "share"];
+  function selectTab(id: TabId, focus = false): void {
+    activeTab = id;
+    for (const [k, v] of Object.entries(tabBtns)) {
+      const on = k === id;
+      v.setAttribute("aria-selected", on ? "true" : "false");
+      v.tabIndex = on ? 0 : -1;
+    }
+    body.setAttribute("aria-labelledby", `tab-${id}`);
+    renderBody();
+    if (focus) tabBtns[id].focus();
+  }
+
+  function makeTab(id: TabId, step: string, label: string): HTMLButtonElement {
     const b = el("button", {
       type: "button",
       role: "tab",
-      "aria-selected": id === activeTab ? "true" : "false"
-    }, [label]);
-    on(b, "click", () => {
-      activeTab = id;
-      for (const [k, v] of Object.entries(tabBtns)) v.setAttribute("aria-selected", k === id ? "true" : "false");
-      renderBody();
+      id: `tab-${id}`,
+      class: "step",
+      "aria-controls": "tools-body",
+      "aria-selected": id === activeTab ? "true" : "false",
+      tabindex: id === activeTab ? "0" : "-1"
+    }, [el("span", { class: "step__num", "aria-hidden": "true" }, [step]), el("span", { class: "step__label" }, [label])]);
+    on(b, "click", () => selectTab(id));
+    on(b, "keydown", (ev) => {
+      const e = ev as KeyboardEvent;
+      const i = TAB_ORDER.indexOf(id);
+      if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+        e.preventDefault();
+        const next = TAB_ORDER[(i + (e.key === "ArrowRight" ? 1 : TAB_ORDER.length - 1)) % TAB_ORDER.length];
+        selectTab(next, true);
+      }
     });
     tabBtns[id] = b;
     return b;
   }
 
-  const tabs = el("div", { class: "tools-tabs", role: "tablist", "aria-label": "꾸미기 도구" }, [
-    makeTab("deco", "꾸미기"),
-    makeTab("imprint", "글자 새기기"),
-    makeTab("share", "공유")
+  const tabs = el("div", { class: "tools-tabs", role: "tablist", "aria-label": "꾸미기 단계" }, [
+    makeTab("deco", "1", "꾸미기"),
+    makeTab("imprint", "2", "글자 새기기"),
+    makeTab("share", "3", "공유")
   ]);
+  body.id = "tools-body";
+  body.setAttribute("role", "tabpanel");
+  body.setAttribute("aria-labelledby", "tab-deco");
+  body.tabIndex = -1;
 
   function renderBody(): void {
     body.replaceChildren();
     if (activeTab === "deco") renderDeco(body, store, live);
     else if (activeTab === "imprint") renderImprint(body, store, live);
-    else renderShare(body, store);
+    else renderShare(body, store, opts.print);
   }
 
-  // Footer row — 초기화 (좌측) · 공유 링크 복사 (우측).
+  // Footer row — 되돌리기 · 다시 · 초기화 (좌측) · 공유 링크 복사 (우측).
   const resetBtn = el("button", {
     type: "button",
-    class: "btn btn--ghost",
-    "aria-label": "꾸미기 초기화"
-  }, ["초기화"]);
+    class: "key key--ghost",
+    "aria-label": "꾸미기 초기화",
+    title: "초기화"
+  }, [icon("reset", 18), el("span", { class: "key__label" }, ["초기화"])]);
   on(resetBtn, "click", () => {
-    if (!confirm("지금 꾸민 큐브를 모두 지우고 처음으로 돌아갈까요?")) return;
+    // With history the reset is undoable, so no blocking confirm() is needed.
+    if (!history) {
+      if (!confirm("지금 꾸민 큐브를 모두 지우고 처음으로 돌아갈까요?")) return;
+      store.set(defaultState());
+      toast("초기화 완료");
+      return;
+    }
+    history.checkpoint();
     store.set(defaultState());
-    toast("초기화 완료");
+    toast("처음 상태로 돌렸어요.", "ok", { label: "되돌리기", run: () => { history.undo(); } });
   });
+
+  const historyKeys: HTMLElement[] = [];
+  if (history) {
+    const undoBtn = el("button", { type: "button", class: "key key--icon", "aria-label": "되돌리기 (Ctrl+Z)", title: "되돌리기" }, [icon("undo", 18)]) as HTMLButtonElement;
+    const redoBtn = el("button", { type: "button", class: "key key--icon", "aria-label": "다시 하기 (Ctrl+Shift+Z)", title: "다시 하기" }, [icon("redo", 18)]) as HTMLButtonElement;
+    const depth = el("span", { class: "history-depth", "aria-hidden": "true" });
+    on(undoBtn, "click", () => history.undo());
+    on(redoBtn, "click", () => history.redo());
+    const sync = () => {
+      undoBtn.disabled = !history.canUndo;
+      redoBtn.disabled = !history.canRedo;
+      depth.textContent = history.undoDepth > 0 ? String(history.undoDepth) : "";
+    };
+    history.subscribe(sync);
+    sync();
+    historyKeys.push(el("div", { class: "history-keys", role: "group", "aria-label": "편집 기록" }, [undoBtn, depth, redoBtn]));
+  }
 
   const shareBtn = el("button", {
     type: "button",
-    class: "btn btn--primary",
+    class: "key key--lemon",
     "aria-label": "공유 링크 복사"
-  }, ["공유 링크 복사"]);
+  }, [icon("link", 18), el("span", {}, ["공유 링크 복사"])]);
   on(shareBtn, "click", async () => {
     try {
       await copyText(buildShareUrl(store.get()));
@@ -98,12 +159,17 @@ export function createTools(store: Store): ToolsHandles {
   });
 
   const footer = el("div", { class: "tools-footer" }, [
-    resetBtn,
+    el("div", { class: "row" }, [...historyKeys, resetBtn]),
     shareBtn
   ]);
 
+  const brand = el("header", { class: "tools-brand" }, [
+    el("h1", { class: "brand" }, ["Cube Site"]),
+    el("p", { class: "brand__sub" }, ["3D 사이트 큐브 · 사이트를 띄우고, 꾸미고, 공유해요"])
+  ]);
+
   const root = el("aside", { class: "tools-panel app-tools", "aria-label": "꾸미기 패널" }, [
-    tabs, body, footer
+    brand, tabs, body, footer
   ]);
 
   renderBody();
@@ -151,11 +217,11 @@ function renderDeco(body: HTMLElement, store: Store, live: LiveUpdate): void {
         const isLive = s.liveFace === fid;
         const btn = el("button", {
           type: "button",
-          class: "face-pill",
+          class: "face-pill" + (isLive ? " face-pill--live" : ""),
           "aria-pressed": isSel ? "true" : "false",
-          "aria-label": `${FACE_LABELS_KO[fid]}면 선택${isLive ? " (입장 면)" : ""}`,
-          title: isLive ? "입장 면" : undefined
-        }, [isLive ? "★" : String(fid + 1)]);
+          "aria-label": `${FACE_LABELS_KO[fid]}면 선택${isLive ? " (사이트가 보이는 면)" : ""}`,
+          title: isLive ? "사이트가 보이는 면" : undefined
+        }, [isLive ? icon("live", 16) : null, el("span", {}, [FACE_LABELS_KO[fid]])]);
         on(btn, "click", () => store.update((st) => ({ ...st, selectedFace: fid })));
         return btn;
       })
@@ -224,11 +290,12 @@ function renderDeco(body: HTMLElement, store: Store, live: LiveUpdate): void {
       })
     ),
     el("div", { class: "row row--space" }, [
-      el("span", { class: "muted", style: "font-size:var(--t-12);" }, [
+      el("span", { class: "hint hint--count" }, [
         `이 면 스티커: ${s.faces[s.selectedFace].stickers.length}개`
       ]),
       (() => {
-        const b = el("button", { type: "button", class: "btn btn--ghost" }, ["면 스티커 지우기"]);
+        const b = el("button", { type: "button", class: "key key--ghost key--small" }, [icon("trash", 16), el("span", {}, ["면 스티커 지우기"])]);
+        b.toggleAttribute("disabled", s.faces[s.selectedFace].stickers.length === 0);
         on(b, "click", () => {
           store.update((st) => {
             const fs = st.faces.slice();
@@ -242,8 +309,8 @@ function renderDeco(body: HTMLElement, store: Store, live: LiveUpdate): void {
   ]));
 
   body.appendChild(
-    el("div", { class: "muted", style: "font-size:var(--t-12);" }, [
-      "Tip: 큐브를 드래그해 돌리고, ★ 표시된 입장 면의 가운데 알약을 누르면 바로 입장해요."
+    el("p", { class: "hint" }, [
+      "큐브에서 면을 누르면 그 면이 꾸미기 대상이 돼요. 오른쪽 클릭하면 그 자리에 ✨ 스티커가 붙어요."
     ])
   );
 }
@@ -312,7 +379,7 @@ function renderImprint(body: HTMLElement, store: Store, live: LiveUpdate): void 
   ]));
 
   body.appendChild(
-    el("div", { class: "muted", style: "font-size:var(--t-12);" }, [
+    el("p", { class: "hint" }, [
       "글자는 면 가운데에 새겨져요. 20자까지 가능해요."
     ])
   );
@@ -320,99 +387,35 @@ function renderImprint(body: HTMLElement, store: Store, live: LiveUpdate): void 
 
 // ---------- 공유 ----------
 
-function renderShare(body: HTMLElement, store: Store): void {
-  const s = store.get();
+function renderShare(body: HTMLElement, store: Store, print?: PrintDeps): void {
+  if (print) body.appendChild(createPrintSection(store, print));
 
-  // Site URL input — swap which website renders in the live cube face.
-  const urlInput = el("input", {
-    type: "url",
-    class: "input",
-    inputmode: "url",
-    autocomplete: "url",
-    spellcheck: "false",
-    placeholder: "https://example.com",
-    value: s.targetUrl,
-    "aria-label": "라이브 사이트 URL"
-  }) as HTMLInputElement;
-  const applyBtn = el("button", { type: "button", class: "btn btn--primary" }, ["적용"]);
-
-  function applyUrl(): void {
-    const raw = urlInput.value.trim();
-    if (!raw) return;
-    const normalized = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  const linkOut = el("output", { class: "share-link", "aria-label": "공유 링크" }, [buildShareUrl(store.get())]);
+  const copyBtn = el("button", { type: "button", class: "key" }, [icon("link", 18), el("span", {}, ["링크 복사"])]);
+  on(copyBtn, "click", async () => {
     try {
-      new URL(normalized);
+      await copyText(buildShareUrl(store.get()));
+      toast("링크가 복사됐어요. 친구한테 보내봐요.");
     } catch {
-      urlInput.setAttribute("aria-invalid", "true");
-      return;
+      toast("복사하지 못했어요. 주소창에서 직접 복사해 주세요.", "warn");
     }
-    urlInput.removeAttribute("aria-invalid");
-    urlInput.value = normalized;
-    store.update((st) => ({ ...st, targetUrl: normalized }));
-  }
-  on(applyBtn, "click", applyUrl);
-  on(urlInput, "keydown", (ev) => {
-    if ((ev as KeyboardEvent).key === "Enter") applyUrl();
   });
 
-  body.appendChild(section("라이브 사이트 URL", [
-    el("div", { class: "row", style: "gap:8px;" }, [urlInput, applyBtn]),
-    el("p", { class: "muted", style: "font-size:var(--t-12);margin:0;line-height:1.5;" }, [
-      "큐브 안에서 보일 사이트 주소예요. iframe 으로 띄우니까 ",
-      el("span", { class: "kbd" }, ["X-Frame-Options: DENY"]),
-      " 인 사이트는 비어 보일 수 있어요 — 그땐 ‘스타일 카드’ 모드로 바꿔주세요."
-    ])
-  ]));
-
-  // Live preview mode toggle. The html-canvas mode is the experimental
-  // HTML-in-Canvas (drawElementImage) path — only selectable when the browser
-  // actually supports it; otherwise it's shown disabled with an explanation.
-  const native = detectMode() === "native";
-  const MODES: { id: LiveMode; label: string }[] = [
-    { id: "iframe", label: "실제 사이트" },
-    { id: "card", label: "스타일 카드" },
-    { id: "html-canvas", label: "HTML-in-Canvas" }
-  ];
-  const modeWrap = el("div", { class: "row", style: "gap:6px;width:100%;flex-wrap:wrap;" });
-  const pills: HTMLButtonElement[] = [];
-  MODES.forEach(({ id, label }) => {
-    const gated = id === "html-canvas" && !native;
-    const b = el("button", {
-      type: "button",
-      class: "mode-pill",
-      "aria-pressed": s.liveMode === id ? "true" : "false",
-      "data-mode": id,
-      disabled: gated,
-      title: gated ? "Chrome 플래그(또는 Origin Trial)가 켜진 브라우저에서만 쓸 수 있는 실험 기능이에요." : undefined
-    }, [label]) as HTMLButtonElement;
-    if (!gated) {
-      on(b, "click", () => {
-        store.update((st) => ({ ...st, liveMode: id }));
-        // The share tab is not auto-rebuilt, so reflect the selection in place.
-        pills.forEach((p) =>
-          p.setAttribute("aria-pressed", p.getAttribute("data-mode") === id ? "true" : "false")
-        );
-      });
-    }
-    pills.push(b);
-    modeWrap.appendChild(b);
-  });
-
-  body.appendChild(section("미리보기 모드", [
-    modeWrap,
-    el("p", { class: "muted", style: "font-size:var(--t-12);margin:0;line-height:1.5;" }, [
-      native
-        ? "HTML-in-Canvas: 실제 HTML을 drawElementImage 로 큐브 면에 직접 그리는 실험 모드예요."
-        : "HTML-in-Canvas 모드는 Chrome 플래그(chrome://flags/#canvas-draw-element)나 Origin Trial 토큰이 있어야 켜져요."
-    ])
+  body.appendChild(section("공유 링크", [
+    el("p", { class: "hint" }, ["꾸민 큐브와 사이트 주소가 링크 하나에 다 담겨요. 받은 사람도 똑같은 큐브를 봐요."]),
+    linkOut,
+    copyBtn
   ]));
 
   body.appendChild(section("도움말", [
-    el("ul", { class: "muted", style: "font-size:var(--t-14);padding-left:1.1rem;margin:0;line-height:1.7;" }, [
-      el("li", {}, ["큐브의 ", el("strong", {}, ["사이트가 보이는 면"]), " 은 진짜 iframe 이라 클릭/스크롤/입력 모두 됩니다."]),
-      el("li", {}, ["빈 공간을 드래그하면 큐브가 회전해요."]),
-      el("li", {}, ["다른 면을 클릭하면 그 면이 꾸미기 대상이 돼요."]),
-      el("li", {}, ["하단 ", el("span", { class: "kbd" }, ["공유 링크 복사"]), " 로 꾸민 큐브 + 사이트 URL 을 통째로 보낼 수 있어요."])
+    el("ul", { class: "help-list" }, [
+      el("li", {}, ["큐브의 ", el("strong", {}, ["사이트가 보이는 면"]), "은 진짜 iframe이라 클릭, 스크롤, 입력이 모두 돼요."]),
+      el("li", {}, ["큐브 바깥 빈 곳을 드래그하거나, 큐브를 누른 뒤 화살표 키로 돌려요."]),
+      el("li", {}, ["다른 면을 누르면 그 면이 꾸미기 대상이 돼요."]),
+      el("li", {}, [
+        el("span", { class: "kbd" }, ["Ctrl/⌘ Z"]), " 로 되돌리고, ",
+        el("span", { class: "kbd" }, ["Shift+Ctrl/⌘ Z"]), " 로 다시 해요."
+      ])
     ])
   ]));
 }
@@ -420,9 +423,9 @@ function renderShare(body: HTMLElement, store: Store): void {
 // ---------- helpers ----------
 
 function section(title: string, children: (Node | string)[]): HTMLElement {
-  return el("section", { class: "field" }, [
-    el("div", { class: "field__label" }, [title]),
-    el("div", { class: "field", style: "gap:var(--s-3);" }, children)
+  return el("section", { class: "group" }, [
+    el("h2", { class: "group__title" }, [title]),
+    el("div", { class: "group__body" }, children)
   ]);
 }
 
@@ -435,10 +438,7 @@ function sliderField(
     min: String(min), max: String(max), step: String(step), value: String(value),
     "aria-label": label
   });
-  const out = el("span", {
-    class: "muted",
-    style: "min-width:54px;text-align:right;font-variant-numeric:tabular-nums;"
-  }, [`${value}${unit}`]);
+  const out = el("span", { class: "readout" }, [`${value}${unit}`]);
   on(input, "input", (e) => {
     const v = Number((e.target as HTMLInputElement).value);
     out.textContent = `${v}${unit}`;
@@ -446,7 +446,7 @@ function sliderField(
   });
   return el("div", { class: "field" }, [
     el("div", { class: "row row--space" }, [
-      el("span", { class: "field__label", style: "letter-spacing:0.08em;" }, [label]),
+      el("span", { class: "field__label" }, [label]),
       out
     ]),
     input
@@ -455,8 +455,8 @@ function sliderField(
 
 function rowField(label: string, control: HTMLElement, init: (c: HTMLElement) => void): HTMLElement {
   init(control);
-  return el("div", { class: "row row--space" }, [
-    el("span", { class: "field__label", style: "letter-spacing:0.08em;" }, [label]),
+  return el("div", { class: "row row--space field-row" }, [
+    el("span", { class: "field__label" }, [label]),
     control
   ]);
 }

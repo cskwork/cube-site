@@ -1,3 +1,4 @@
+import "@fontsource/do-hyeon/400.css";
 import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/layout.css";
