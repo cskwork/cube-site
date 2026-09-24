@@ -1,0 +1,203 @@
+{
+ "schemaVersion": 2,
+ "generatedAt": "2026-09-24T08:09:23.070848+00:00",
+ "title": "Design System: Cube Site",
+ "extensions": {
+  "colorMeta": {
+   "kiosk": {
+    "role": "primary",
+    "displayName": "Kiosk Cobalt",
+    "tonalRamp": [
+     "#0b1158",
+     "#111a78",
+     "#1a2fd1",
+     "#2340ff",
+     "#4d64ff",
+     "#8494ff",
+     "#bcc5ff",
+     "#e3e7ff"
+    ]
+   },
+   "lemon": {
+    "role": "accent",
+    "displayName": "Print Lemon",
+    "tonalRamp": [
+     "#5c4a00",
+     "#8a7000",
+     "#b89500",
+     "#f2c800",
+     "#ffe14d",
+     "#ffea80",
+     "#fff2b3",
+     "#fffae0"
+    ]
+   },
+   "ink": {
+    "role": "neutral",
+    "displayName": "Booth Ink",
+    "tonalRamp": [
+     "#0e1330",
+     "#262c4f",
+     "#464c6e",
+     "#5f6688",
+     "#8a90ad",
+     "#b5b9cf",
+     "#d5d8e5",
+     "#f3f4f9"
+    ]
+   },
+   "backdrop": {
+    "role": "neutral",
+    "displayName": "Backdrop Sweep"
+   }
+  },
+  "typographyMeta": {
+   "display": {
+    "displayName": "Do Hyeon signage",
+    "purpose": "Wordmark, step numerals, print strip only."
+   },
+   "caption": {
+    "displayName": "Telop caption",
+    "purpose": "Toast captions."
+   },
+   "title": {
+    "displayName": "Group title",
+    "purpose": "Section titles inside a step."
+   },
+   "body": {
+    "displayName": "Body",
+    "purpose": "Hints and help."
+   },
+   "label": {
+    "displayName": "Label",
+    "purpose": "Control labels and key text."
+   }
+  },
+  "shadows": [
+   {
+    "name": "key-lip",
+    "value": "inset 0 -3px 0 rgba(14,19,48,0.14)",
+    "purpose": "Pressed-plastic bottom edge of every key cap."
+   },
+   {
+    "name": "lift-1",
+    "value": "0 1px 2px rgba(14,19,48,0.12), 0 4px 10px -6px rgba(14,19,48,0.3)",
+    "purpose": "Small floating overlays (coach, slider thumb)."
+   },
+   {
+    "name": "lift-2",
+    "value": "0 18px 40px -22px rgba(6,10,70,0.6), 0 2px 6px rgba(6,10,70,0.12)",
+    "purpose": "Control screen and print strip."
+   }
+  ],
+  "motion": [
+   {
+    "name": "ease-out",
+    "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+    "purpose": "All state transitions (140–220ms)."
+   },
+   {
+    "name": "print-out",
+    "value": "1.2s clip-path reveal + 36px drop",
+    "purpose": "The one authored moment: a fresh 네컷 strip feeding out."
+   },
+   {
+    "name": "camera-tween",
+    "value": "520ms exponential ease-out along the orbit sphere",
+    "purpose": "View keys and the first-load turn to the site."
+   }
+  ],
+  "breakpoints": [
+   {
+    "name": "sheet",
+    "value": "960px"
+   },
+   {
+    "name": "compact",
+    "value": "420px"
+   },
+   {
+    "name": "view-key-labels",
+    "value": "1180px"
+   }
+  ]
+ },
+ "components": [
+  {
+   "name": "Key",
+   "kind": "button",
+   "refersTo": "key",
+   "description": "Every button: white cap, ink outline, key lip.",
+   "html": "<button class=\"ds-key\">링크 복사</button>",
+   "css": ".ds-key{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:0 16px;border-radius:14px;border:2px solid #0e1330;background:#fff;color:#0e1330;font-weight:700;font-size:14px;box-shadow:inset 0 -3px 0 rgba(14,19,48,.14);transition:transform .14s cubic-bezier(.16,1,.3,1),background-color .14s}.ds-key:hover{background:#f3f4f9}.ds-key:active{transform:translateY(1px);box-shadow:none}.ds-key:focus-visible{outline:3px solid #2340ff;outline-offset:2px}"
+  },
+  {
+   "name": "Lemon Key",
+   "kind": "button",
+   "refersTo": "key-lemon",
+   "description": "The single primary action per screen.",
+   "html": "<button class=\"ds-key-lemon\">공유 링크 복사</button>",
+   "css": ".ds-key-lemon{min-height:44px;padding:0 16px;border-radius:14px;border:2px solid #0e1330;background:#ffe14d;color:#0e1330;font-weight:700;font-size:14px;box-shadow:inset 0 -3px 0 rgba(14,19,48,.14)}.ds-key-lemon:hover{background:#f2c800}.ds-key-lemon:active{transform:translateY(1px);box-shadow:none}.ds-key-lemon:focus-visible{outline:3px solid #2340ff;outline-offset:2px}"
+  },
+  {
+   "name": "Step Tab",
+   "kind": "nav",
+   "refersTo": "step-selected",
+   "description": "Booth step with Do Hyeon numeral and lemon notch when selected.",
+   "html": "<button class=\"ds-step\" aria-selected=\"true\"><span class=\"ds-num\">1</span>꾸미기</button>",
+   "css": ".ds-step{position:relative;display:inline-flex;align-items:center;gap:8px;min-height:48px;padding:0 16px;border-radius:14px;border:2px solid #0e1330;background:#fff;color:#0e1330;font-weight:700;font-size:14px}.ds-num{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#2340ff;color:#fff;font-family:'Do Hyeon',sans-serif}.ds-step::after{content:'';position:absolute;left:50%;bottom:-11px;width:16px;height:6px;margin-left:-8px;border-radius:3px;background:#ffe14d;box-shadow:0 0 0 2px #0e1330}"
+  },
+  {
+   "name": "Address Field",
+   "kind": "input",
+   "refersTo": "key",
+   "description": "Live-site URL strip on the cobalt body.",
+   "html": "<div class=\"ds-addr\"><input value=\"https://example.com\" aria-label=\"라이브 사이트 URL\"><button>띄우기</button></div>",
+   "css": ".ds-addr{display:flex;gap:8px;padding:4px 4px 4px 12px;background:#fff;border:2px solid #0e1330;border-radius:14px}.ds-addr input{flex:1;border:0;font-weight:600;font-size:15px;color:#0e1330;background:transparent}.ds-addr input:focus{outline:none}.ds-addr:focus-within{outline:3px solid #ffe14d;outline-offset:2px}.ds-addr button{min-height:36px;padding:0 14px;border-radius:10px;border:2px solid #0e1330;background:#0e1330;color:#fff;font-weight:700}"
+  },
+  {
+   "name": "Telop Toast",
+   "kind": "custom",
+   "refersTo": "toast",
+   "description": "Lemon caption with an optional undo action.",
+   "html": "<div class=\"ds-toast\"><span>처음 상태로 돌렸어요.</span><button>되돌리기</button></div>",
+   "css": ".ds-toast{display:inline-flex;align-items:center;gap:12px;padding:10px 12px 10px 18px;border-radius:14px;background:#ffe14d;border:2px solid #0e1330;color:#0e1330;font-family:'Do Hyeon',sans-serif;font-size:18px}.ds-toast button{min-height:36px;padding:0 12px;border-radius:10px;border:2px solid #0e1330;background:#0e1330;color:#fff;font:800 13px system-ui}"
+  }
+ ],
+ "narrative": {
+  "northStar": "The Website Photo Booth",
+  "overview": "A 인생네컷-style kiosk: cobalt body, backdrop-sweep viewfinder holding a live site on a 3D cube, a white control screen walking three booth steps, and a four-cut print strip as the take-home.",
+  "keyCharacteristics": [
+   "Committed cobalt field",
+   "Key caps with ink outline and lip",
+   "One lemon action",
+   "Do Hyeon signage lettering",
+   "Selection as a mark (notch/outline)"
+  ],
+  "rules": [
+   {
+    "name": "One lemon",
+    "body": "At most one lemon primary key per screen, plus notches.",
+    "section": "colors"
+   },
+   {
+    "name": "Selection is a mark",
+    "body": "Selected = outline + notch or cobalt fill with ink outline; never hue alone.",
+    "section": "colors"
+   },
+   {
+    "name": "Signage only",
+    "body": "Do Hyeon is for wordmark, numerals, captions and print; never labels.",
+    "section": "typography"
+   }
+  ],
+  "dos": [
+   "Keep the cube legible as a 3D object",
+   "Give every control a 44px key cap and a visible focus ring"
+  ],
+  "donts": [
+   "No neon glow, glass or gradient text",
+   "No colour-only state"
+  ]
+ }
+}
