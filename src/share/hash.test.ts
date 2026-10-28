@@ -110,4 +110,14 @@ describe("share/hash", () => {
     expect(out!.liveFace).toBe(4);
     expect(out!.selectedFace).toBe(4);
   });
+  it("drops a non-http(s) targetUrl so a shared link cannot load script into the live iframe", () => {
+    // targetUrl flows straight into iframe.src (dice/scene.ts). A javascript:
+    // URL there runs in this page's origin, so a crafted share link was XSS.
+    for (const bad of ["javascript:alert(1)", "data:text/html,<script>alert(1)</script>", "not a url"]) {
+      const s = { ...defaultState(), targetUrl: bad };
+      const out = hashToState(stateToHash(s));
+      expect(out).not.toBeNull();
+      expect(out!.targetUrl).toBe(defaultState().targetUrl);
+    }
+  });
 });

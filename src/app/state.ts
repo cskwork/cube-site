@@ -217,6 +217,16 @@ function toFaceId(v: unknown, def: FaceId): FaceId {
     : def;
 }
 
+function isHttpUrl(v: unknown): v is string {
+  if (typeof v !== "string") return false;
+  try {
+    const { protocol } = new URL(v);
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 /**
  * A safe CSS hex color. Colors from untrusted state reach two unsafe sinks:
@@ -241,7 +251,9 @@ export function validate(s: AppState): AppState {
   if (s.liveMode !== "iframe" && s.liveMode !== "card" && s.liveMode !== "html-canvas") {
     s = { ...s, liveMode: "iframe" };
   }
-  if (typeof s.targetUrl !== "string" || s.targetUrl.length === 0) {
+  // targetUrl becomes iframe.src: only http(s) is allowed, so a shared link
+  // can't smuggle in a javascript:/data: URL that runs in this page's origin.
+  if (!isHttpUrl(s.targetUrl)) {
     s = { ...s, targetUrl: defaultTargetUrl() };
   }
   // Clamp face indices — an out-of-range liveFace makes FACE_CORNERS[liveFace]
